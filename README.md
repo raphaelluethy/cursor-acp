@@ -20,14 +20,14 @@ This is a personal project aimed at bringing a great AI coding agent into the Ze
 
 ## Slash Commands
 
-| Command   | Description                           |
-|-----------|---------------------------------------|
-| `/help`   | Show available commands               |
-| `/model`  | Switch or display the current model   |
-| `/mode`   | Switch or display the current mode    |
-| `/status` | Show authentication and session status|
-| `/login`  | Authenticate with Cursor              |
-| `/logout` | Sign out of Cursor                    |
+| Command   | Description                            |
+| --------- | -------------------------------------- |
+| `/help`   | Show available commands                |
+| `/model`  | Switch or display the current model    |
+| `/mode`   | Switch or display the current mode     |
+| `/status` | Show authentication and session status |
+| `/login`  | Authenticate with Cursor               |
+| `/logout` | Sign out of Cursor                     |
 
 ## Installation
 
