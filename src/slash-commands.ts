@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { CursorAuthClient } from "./auth.js";
 import { SessionModeId, SUPPORTED_MODE_IDS } from "./settings.js";
+import { CustomSkill, resolveSkillPrompt } from "./skills.js";
 
 export interface CursorModelDescriptor {
   modelId: string;
@@ -29,6 +30,7 @@ export interface SlashCommandContext {
   auth: CursorAuthClient;
   listModels: () => Promise<CursorModelDescriptor[]>;
   customCommands?: CustomSlashCommand[];
+  skills?: CustomSkill[];
   onModeChanged?: (modeId: SessionModeId) => Promise<void>;
 }
 
@@ -56,6 +58,7 @@ const BUILTIN_SLASH_COMMANDS: AvailableCommand[] = [
 
 export function availableSlashCommands(
   customCommands: CustomSlashCommand[] = [],
+  skills: CustomSkill[] = [],
 ): AvailableCommand[] {
   const deduped = new Map<string, AvailableCommand>();
   for (const command of BUILTIN_SLASH_COMMANDS) {
@@ -74,7 +77,24 @@ export function availableSlashCommands(
     });
   }
 
+  for (const skill of skills) {
+    const name = skillCommandName(skill.name);
+    const key = name.toLowerCase();
+    if (deduped.has(key)) {
+      continue;
+    }
+    deduped.set(key, {
+      name,
+      description: skill.description,
+      input: null,
+    });
+  }
+
   return [...deduped.values()];
+}
+
+function skillCommandName(skillName: string): string {
+  return `skill:${skillName}`;
 }
 
 async function collectMarkdownFiles(dir: string): Promise<string[]> {
@@ -270,6 +290,13 @@ export function resolveCustomSlashCommandPrompt(
   return applyCustomCommandArgs(command.template, args);
 }
 
+export function resolveSkillSlashCommandPrompt(
+  commandName: string,
+  skills: CustomSkill[],
+): string | null {
+  return resolveSkillPrompt(commandName, skills);
+}
+
 export function builtInSlashCommandNames(): string[] {
   return [
     ...BUILTIN_SLASH_COMMANDS.map((command) =>
@@ -335,6 +362,11 @@ export async function handleSlashCommand(
                     ? `/${command.name} ${command.argumentHint}`
                     : `/${command.name}`,
                 )
+                .join(", ")}`
+            : null,
+          context.skills?.length
+            ? `Skills: ${context.skills
+                .map((skill) => `/${skillCommandName(skill.name)}`)
                 .join(", ")}`
             : null,
         ]

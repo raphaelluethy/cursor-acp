@@ -41,7 +41,10 @@ import {
   CustomSlashCommand,
   handleSlashCommand,
   loadCustomSlashCommands,
+  resolveCustomSlashCommandPrompt,
+  resolveSkillSlashCommandPrompt,
 } from "./slash-commands.js";
+import { CustomSkill, loadCustomSkills } from "./skills.js";
 import {
   parseLeadingSlashCommand,
   promptToCursorText,
@@ -63,6 +66,7 @@ interface SessionState {
   modeId: SessionModeId;
   modelId?: string;
   customCommands: CustomSlashCommand[];
+  skills: CustomSkill[];
   cancelled: boolean;
   activeRun?: {
     cancel: () => void;
@@ -192,7 +196,7 @@ export class CursorAcpAgent implements Agent {
     }
 
     session.cancelled = false;
-    const promptText = promptToCursorText(params);
+    let promptText = promptToCursorText(params);
 
     const slash = parseLeadingSlashCommand(promptText);
     if (slash.hasSlash) {
@@ -201,6 +205,7 @@ export class CursorAcpAgent implements Agent {
         auth: this.auth,
         listModels: async () => await this.runner.listModels(),
         customCommands: session.customCommands,
+        skills: session.skills,
         onModeChanged: async (modeId) => {
           await this.client.sessionUpdate({
             sessionId: session.sessionId,
@@ -235,6 +240,24 @@ export class CursorAcpAgent implements Agent {
         }
 
         return { stopReason: "end_turn" };
+      }
+
+      const skillPrompt = resolveSkillSlashCommandPrompt(
+        slash.command,
+        session.skills,
+      );
+      if (skillPrompt) {
+        const extra = slash.args.trim();
+        promptText = extra ? `${skillPrompt}\n\n${extra}` : skillPrompt;
+      } else {
+        const customPrompt = resolveCustomSlashCommandPrompt(
+          slash.command,
+          slash.args,
+          session.customCommands,
+        );
+        if (customPrompt) {
+          promptText = customPrompt;
+        }
       }
     }
 
@@ -346,6 +369,7 @@ export class CursorAcpAgent implements Agent {
       modeId,
       modelId,
       customCommands: [],
+      skills: [],
       cancelled: false,
     };
 
@@ -362,16 +386,11 @@ export class CursorAcpAgent implements Agent {
 
     const models = await this.getAvailableModels(session);
     session.customCommands = await this.getAvailableSlashCommands(session.cwd);
+    session.skills = await this.getAvailableSkills(session.cwd);
     this.sessions[session.sessionId] = session;
 
     setTimeout(() => {
-      void this.client.sessionUpdate({
-        sessionId: session.sessionId,
-        update: {
-          sessionUpdate: "available_commands_update",
-          availableCommands: availableSlashCommands(session.customCommands),
-        },
-      });
+      void this.emitAvailableCommands(session);
     }, 0);
 
     return {
@@ -420,6 +439,29 @@ export class CursorAcpAgent implements Agent {
       );
       return [];
     }
+  }
+
+  private async getAvailableSkills(workspace: string): Promise<CustomSkill[]> {
+    try {
+      const skills = await loadCustomSkills(workspace);
+      return skills.filter((skill) => skill.origin === "user");
+    } catch (error) {
+      this.logger.error("[cursor-acp] Unable to load skills", error);
+      return [];
+    }
+  }
+
+  private async emitAvailableCommands(session: SessionState): Promise<void> {
+    await this.client.sessionUpdate({
+      sessionId: session.sessionId,
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: availableSlashCommands(
+          session.customCommands,
+          session.skills,
+        ),
+      },
+    });
   }
 
   private modeToRunnerOptions(
