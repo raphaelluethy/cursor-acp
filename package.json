@@ -20,6 +20,7 @@
     "!dist/tests/",
     "README.md",
     "LICENSE",
+    "NOTICE",
     "package.json"
   ],
   "scripts": {
