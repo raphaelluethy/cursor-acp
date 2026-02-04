@@ -4,7 +4,7 @@ An [Agent Client Protocol (ACP)](https://github.com/AnyContext/agent-client-prot
 
 ## About
 
-This is a personal project aimed at bringing a great AI coding agent into the Zed editor. It wraps the Cursor Agent CLI and exposes it via the ACP protocol, allowing Zed (and other ACP-compatible clients) to leverage Cursor's capabilities.
+This is an `ai-assisted` personal project aimed at bringing a great AI coding agent into the Zed editor. It wraps the Cursor Agent CLI and exposes it via the ACP protocol, allowing Zed (and other ACP-compatible clients) to leverage Cursor's capabilities.
 
 **Based on [claude-code-acp](https://github.com/zed-industries/claude-code-acp)** by Zed Industries - the original ACP adapter for Claude Code that served as the architectural foundation for this project.
 
