@@ -1,0 +1,574 @@
+import {
+  Agent,
+  AgentSideConnection,
+  AuthenticateRequest,
+  CancelNotification,
+  ClientCapabilities,
+  ForkSessionRequest,
+  ForkSessionResponse,
+  InitializeRequest,
+  InitializeResponse,
+  ListSessionsRequest,
+  ListSessionsResponse,
+  NewSessionRequest,
+  NewSessionResponse,
+  PromptRequest,
+  PromptResponse,
+  ReadTextFileRequest,
+  ReadTextFileResponse,
+  RequestError,
+  ResumeSessionRequest,
+  ResumeSessionResponse,
+  SessionModelState,
+  SetSessionModelRequest,
+  SetSessionModelResponse,
+  SetSessionModeRequest,
+  SetSessionModeResponse,
+  SessionNotification,
+  WriteTextFileRequest,
+  WriteTextFileResponse,
+} from "@agentclientprotocol/sdk";
+import { randomUUID } from "node:crypto";
+import packageJson from "../package.json" with { type: "json" };
+import { CursorCliRunner } from "./cursor-cli-runner.js";
+import { CursorAuth, CursorAuthClient } from "./auth.js";
+import {
+  mapCursorEventToAcp,
+  RejectedToolCall,
+} from "./cursor-event-mapper.js";
+import {
+  availableSlashCommands,
+  handleSlashCommand,
+} from "./slash-commands.js";
+import {
+  parseLeadingSlashCommand,
+  promptToCursorText,
+} from "./prompt-conversion.js";
+import {
+  availableModes,
+  DEFAULT_MODE_ID,
+  parseDefaultMode,
+  parseDefaultModel,
+  SessionModeId,
+  SUPPORTED_MODE_IDS,
+} from "./settings.js";
+import { Logger, unreachable } from "./utils.js";
+
+interface SessionState {
+  sessionId: string;
+  cwd: string;
+  backendSessionId?: string;
+  modeId: SessionModeId;
+  modelId?: string;
+  cancelled: boolean;
+  activeRun?: {
+    cancel: () => void;
+  };
+}
+
+interface PromptAttemptResult {
+  stopReason: PromptResponse["stopReason"];
+  rejectedToolCalls: RejectedToolCall[];
+}
+
+export interface CursorAcpAgentOptions {
+  runner?: CursorCliRunner;
+  auth?: CursorAuthClient;
+  logger?: Logger;
+}
+
+export class CursorAcpAgent implements Agent {
+  private readonly sessions: Record<string, SessionState> = {};
+  private clientCapabilities?: ClientCapabilities;
+
+  private readonly runner: CursorCliRunner;
+  private readonly auth: CursorAuthClient;
+  private readonly logger: Logger;
+
+  constructor(
+    private readonly client: AgentSideConnection,
+    options: CursorAcpAgentOptions = {},
+  ) {
+    this.runner = options.runner ?? new CursorCliRunner();
+    this.auth = options.auth ?? new CursorAuth();
+    this.logger = options.logger ?? console;
+  }
+
+  async initialize(request: InitializeRequest): Promise<InitializeResponse> {
+    this.clientCapabilities = request.clientCapabilities;
+
+    const authMethod: any = {
+      id: "cursor-login",
+      name: "Log in with Cursor CLI",
+      description: "Run `agent login`",
+    };
+
+    if (request.clientCapabilities?._meta?.["terminal-auth"] === true) {
+      authMethod._meta = {
+        "terminal-auth": {
+          command: "agent",
+          args: ["login"],
+          label: "Cursor CLI Login",
+        },
+      };
+    }
+
+    return {
+      protocolVersion: 1,
+      agentCapabilities: {
+        promptCapabilities: {
+          image: true,
+          embeddedContext: true,
+        },
+        sessionCapabilities: {
+          fork: {},
+          resume: {},
+          list: {},
+        },
+      },
+      agentInfo: {
+        name: packageJson.name,
+        title: "Cursor CLI",
+        version: packageJson.version,
+      },
+      authMethods: [authMethod],
+    };
+  }
+
+  async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
+    const sessionId = randomUUID();
+    return await this.createSession({ sessionId, cwd: params.cwd });
+  }
+
+  async unstable_forkSession(
+    params: ForkSessionRequest,
+  ): Promise<ForkSessionResponse> {
+    const sessionId = randomUUID();
+    return await this.createSession({
+      sessionId,
+      cwd: params.cwd,
+      backendSessionId: params.sessionId,
+    });
+  }
+
+  async unstable_resumeSession(
+    params: ResumeSessionRequest,
+  ): Promise<ResumeSessionResponse> {
+    return await this.createSession({
+      sessionId: params.sessionId,
+      cwd: params.cwd,
+      backendSessionId: params.sessionId,
+    });
+  }
+
+  async unstable_listSessions(
+    _params: ListSessionsRequest,
+  ): Promise<ListSessionsResponse> {
+    this.logger.warn?.(
+      "[cursor-acp] unstable_listSessions is intentionally disabled for cursor-acp.",
+    );
+    return { sessions: [] };
+  }
+
+  async authenticate(_params: AuthenticateRequest): Promise<void> {
+    const status = await this.auth.ensureLoggedIn();
+    if (!status.loggedIn) {
+      throw RequestError.authRequired();
+    }
+  }
+
+  async prompt(params: PromptRequest): Promise<PromptResponse> {
+    const session = this.sessions[params.sessionId];
+    if (!session) {
+      throw RequestError.invalidParams("Session not found");
+    }
+
+    const status = await this.auth.status();
+    if (!status.loggedIn) {
+      throw RequestError.authRequired();
+    }
+
+    session.cancelled = false;
+    const promptText = promptToCursorText(params);
+
+    const slash = parseLeadingSlashCommand(promptText);
+    if (slash.hasSlash) {
+      const handled = await handleSlashCommand(slash.command, slash.args, {
+        session,
+        auth: this.auth,
+        listModels: async () => await this.runner.listModels(),
+        onModeChanged: async (modeId) => {
+          await this.client.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: "current_mode_update",
+              currentModeId: modeId,
+            },
+          });
+        },
+      });
+
+      if (handled.handled) {
+        if (handled.responseText) {
+          await this.client.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: {
+                type: "text",
+                text: handled.responseText,
+              },
+            },
+          });
+        }
+        return { stopReason: "end_turn" };
+      }
+    }
+
+    const firstAttempt = await this.runPromptAttempt(
+      session,
+      promptText,
+      false,
+    );
+
+    if (
+      (session.modeId === "default" || session.modeId === "acceptEdits") &&
+      firstAttempt.rejectedToolCalls.length > 0
+    ) {
+      const approved = await this.requestPermissionToRetry(
+        session.sessionId,
+        firstAttempt.rejectedToolCalls[0],
+      );
+
+      if (approved === "allow_always") {
+        session.modeId = "bypassPermissions";
+        await this.client.sessionUpdate({
+          sessionId: session.sessionId,
+          update: {
+            sessionUpdate: "current_mode_update",
+            currentModeId: session.modeId,
+          },
+        });
+      }
+
+      if (approved === "allow_once" || approved === "allow_always") {
+        return await this.runPromptAttempt(session, promptText, true);
+      }
+    }
+
+    return { stopReason: firstAttempt.stopReason };
+  }
+
+  async cancel(params: CancelNotification): Promise<void> {
+    const session = this.sessions[params.sessionId];
+    if (!session) {
+      throw RequestError.invalidParams("Session not found");
+    }
+
+    session.cancelled = true;
+    session.activeRun?.cancel();
+  }
+
+  async unstable_setSessionModel(
+    params: SetSessionModelRequest,
+  ): Promise<SetSessionModelResponse | void> {
+    const session = this.sessions[params.sessionId];
+    if (!session) {
+      throw RequestError.invalidParams("Session not found");
+    }
+
+    session.modelId = params.modelId;
+    return {};
+  }
+
+  async setSessionMode(
+    params: SetSessionModeRequest,
+  ): Promise<SetSessionModeResponse> {
+    const session = this.sessions[params.sessionId];
+    if (!session) {
+      throw RequestError.invalidParams("Session not found");
+    }
+
+    if (!SUPPORTED_MODE_IDS.includes(params.modeId as SessionModeId)) {
+      throw RequestError.invalidParams(`Invalid mode: ${params.modeId}`);
+    }
+
+    session.modeId = params.modeId as SessionModeId;
+    return {};
+  }
+
+  async readTextFile(
+    params: ReadTextFileRequest,
+  ): Promise<ReadTextFileResponse> {
+    return await this.client.readTextFile(params);
+  }
+
+  async writeTextFile(
+    params: WriteTextFileRequest,
+  ): Promise<WriteTextFileResponse> {
+    return await this.client.writeTextFile(params);
+  }
+
+  private async createSession(params: {
+    sessionId: string;
+    cwd: string;
+    backendSessionId?: string;
+  }): Promise<NewSessionResponse> {
+    const modeId = parseDefaultMode() ?? DEFAULT_MODE_ID;
+    const modelId = parseDefaultModel();
+
+    const session: SessionState = {
+      sessionId: params.sessionId,
+      cwd: params.cwd,
+      backendSessionId: params.backendSessionId,
+      modeId,
+      modelId,
+      cancelled: false,
+    };
+
+    if (!session.backendSessionId) {
+      try {
+        session.backendSessionId = await this.runner.createChat();
+      } catch (error) {
+        this.logger.error(
+          "[cursor-acp] create-chat failed, using lazy backend session binding",
+          error,
+        );
+      }
+    }
+
+    const models = await this.getAvailableModels(session);
+    this.sessions[session.sessionId] = session;
+
+    setTimeout(() => {
+      void this.client.sessionUpdate({
+        sessionId: session.sessionId,
+        update: {
+          sessionUpdate: "available_commands_update",
+          availableCommands: availableSlashCommands(),
+        },
+      });
+    }, 0);
+
+    return {
+      sessionId: session.sessionId,
+      models,
+      modes: availableModes(session.modeId),
+    };
+  }
+
+  private async getAvailableModels(
+    session: SessionState,
+  ): Promise<SessionModelState> {
+    let listed = [] as Awaited<ReturnType<CursorCliRunner["listModels"]>>;
+    try {
+      listed = await this.runner.listModels();
+    } catch (error) {
+      this.logger.error("[cursor-acp] Unable to list models", error);
+    }
+
+    const availableModels = listed.map((model) => ({
+      modelId: model.modelId,
+      name: model.name,
+      description: model.name,
+    }));
+
+    if (!session.modelId) {
+      session.modelId =
+        listed.find((model) => model.current)?.modelId ?? listed[0]?.modelId;
+    }
+
+    return {
+      availableModels,
+      currentModelId: session.modelId,
+    };
+  }
+
+  private modeToRunnerOptions(
+    session: SessionState,
+    forceRetry: boolean,
+  ): {
+    modeId?: "plan" | "ask";
+    force: boolean;
+  } {
+    if (forceRetry) {
+      return { force: true };
+    }
+
+    switch (session.modeId) {
+      case "plan":
+        return { modeId: "plan", force: false };
+      case "ask":
+        return { modeId: "ask", force: false };
+      case "bypassPermissions":
+        return { force: true };
+      case "acceptEdits":
+      case "default":
+        return { force: false };
+      default:
+        unreachable(session.modeId, this.logger);
+    }
+  }
+
+  private async runPromptAttempt(
+    session: SessionState,
+    promptText: string,
+    forceRetry: boolean,
+  ): Promise<PromptAttemptResult> {
+    const rejectedToolCalls: RejectedToolCall[] = [];
+    const toolUseCache: Record<string, { toolCallId: string; payload: any }> =
+      {};
+    const modeSettings = this.modeToRunnerOptions(session, forceRetry);
+
+    const run = this.runner.startPrompt({
+      workspace: session.cwd,
+      backendSessionId: session.backendSessionId,
+      prompt: promptText,
+      modelId: session.modelId,
+      modeId: modeSettings.modeId,
+      force: modeSettings.force,
+      onEvent: async (event) => {
+        const mapped = mapCursorEventToAcp(event, {
+          sessionId: session.sessionId,
+          toolUseCache,
+          logger: this.logger,
+        });
+
+        if (mapped.backendSessionId) {
+          session.backendSessionId = mapped.backendSessionId;
+        }
+
+        if (
+          mapped.currentModeId &&
+          SUPPORTED_MODE_IDS.includes(mapped.currentModeId as SessionModeId)
+        ) {
+          session.modeId = mapped.currentModeId as SessionModeId;
+        }
+
+        if (mapped.rejectedToolCall) {
+          rejectedToolCalls.push(mapped.rejectedToolCall);
+        }
+
+        for (const notification of mapped.notifications) {
+          await this.client.sessionUpdate(notification);
+        }
+      },
+    });
+
+    session.activeRun = run;
+
+    try {
+      const completed = await run.completed;
+      session.activeRun = undefined;
+
+      if (session.cancelled) {
+        return {
+          stopReason: "cancelled",
+          rejectedToolCalls,
+        };
+      }
+
+      const resultEvent = completed.resultEvent;
+      if (!resultEvent) {
+        throw RequestError.internalError(
+          undefined,
+          "Cursor CLI did not emit a result event",
+        );
+      }
+
+      const subtype =
+        typeof resultEvent.subtype === "string" ? resultEvent.subtype : "";
+      const isError = resultEvent.is_error === true;
+
+      if (subtype === "success" && !isError) {
+        return {
+          stopReason: "end_turn",
+          rejectedToolCalls,
+        };
+      }
+
+      if (
+        subtype.includes("max_turn") ||
+        subtype.includes("max_budget") ||
+        subtype.includes("max_structured")
+      ) {
+        return {
+          stopReason: "max_turn_requests",
+          rejectedToolCalls,
+        };
+      }
+
+      const resultText =
+        typeof resultEvent.result === "string" ? resultEvent.result : subtype;
+      throw RequestError.internalError(
+        undefined,
+        resultText || "Cursor CLI failed",
+      );
+    } catch (error) {
+      session.activeRun = undefined;
+      if (session.cancelled) {
+        return {
+          stopReason: "cancelled",
+          rejectedToolCalls,
+        };
+      }
+
+      if (error instanceof RequestError) {
+        throw error;
+      }
+
+      throw RequestError.internalError(undefined, String(error));
+    }
+  }
+
+  private async requestPermissionToRetry(
+    sessionId: string,
+    rejectedToolCall: RejectedToolCall,
+  ): Promise<"allow_once" | "allow_always" | "reject"> {
+    const response = await this.client.requestPermission({
+      options: [
+        {
+          kind: "allow_once",
+          name: "Allow once",
+          optionId: "allow_once",
+        },
+        {
+          kind: "allow_always",
+          name: "Always allow",
+          optionId: "allow_always",
+        },
+        {
+          kind: "reject_once",
+          name: "Reject",
+          optionId: "reject",
+        },
+      ],
+      sessionId,
+      toolCall: {
+        toolCallId: rejectedToolCall.toolCallId,
+        rawInput: rejectedToolCall.rawInput,
+        title: rejectedToolCall.title,
+      },
+    });
+
+    if (response.outcome?.outcome !== "selected") {
+      return "reject";
+    }
+
+    switch (response.outcome.optionId) {
+      case "allow_once":
+      case "allow_always":
+        return response.outcome.optionId;
+      case "reject":
+      default:
+        return "reject";
+    }
+  }
+}
+
+export function maybeEmitSessionUpdate(
+  client: AgentSideConnection,
+  notification: SessionNotification,
+): Promise<void> {
+  return client.sessionUpdate(notification);
+}
