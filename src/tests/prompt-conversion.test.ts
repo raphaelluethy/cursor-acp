@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseLeadingSlashCommand,
   promptToCursorText,
   rewriteMcpSlashCommand,
 } from "../prompt-conversion.js";
@@ -37,5 +38,15 @@ describe("prompt conversion", () => {
     expect(text).toContain("@bar.ts (file:///tmp/foo/bar.ts)");
     expect(text).toContain("@baz.ts (file:///tmp/foo/baz.ts)");
     expect(text).toContain('<context ref="file:///tmp/foo/baz.ts">');
+  });
+
+  it("parses slash command arguments after newline", () => {
+    const parsed = parseLeadingSlashCommand("/commit\nfeat(parser)");
+    expect(parsed).toEqual({
+      hasSlash: true,
+      command: "commit",
+      args: "feat(parser)",
+      raw: "/commit\nfeat(parser)",
+    });
   });
 });

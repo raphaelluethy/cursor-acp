@@ -99,8 +99,8 @@ export function parseLeadingSlashCommand(text: string): ParsedSlashCommand {
     return { hasSlash: false, command: null, args: trimmed, raw: text };
   }
 
-  const firstSpace = trimmed.indexOf(" ");
-  if (firstSpace === -1) {
+  const match = trimmed.match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
+  if (!match) {
     return {
       hasSlash: true,
       command: trimmed.slice(1),
@@ -111,8 +111,8 @@ export function parseLeadingSlashCommand(text: string): ParsedSlashCommand {
 
   return {
     hasSlash: true,
-    command: trimmed.slice(1, firstSpace),
-    args: trimmed.slice(firstSpace + 1).trim(),
+    command: match[1] || "",
+    args: match[2]?.trim() || "",
     raw: text,
   };
 }

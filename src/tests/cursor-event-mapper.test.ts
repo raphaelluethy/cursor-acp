@@ -102,6 +102,25 @@ describe("cursor event mapper", () => {
     expect(done.notifications[0]).toEqual({
       sessionId: "s1",
       update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "todo_1",
+        status: "completed",
+        rawOutput: {
+          success: {
+            todos: [{ content: "Inspect repo", status: "TODO_STATUS_PENDING" }],
+          },
+        },
+        _meta: {
+          cursorCli: {
+            toolName: "updateTodosToolCall",
+          },
+        },
+      },
+    });
+
+    expect(done.notifications[1]).toEqual({
+      sessionId: "s1",
+      update: {
         sessionUpdate: "plan",
         entries: [
           { content: "Inspect repo", priority: "medium", status: "pending" },

@@ -38,7 +38,9 @@ import {
 } from "./cursor-event-mapper.js";
 import {
   availableSlashCommands,
+  CustomSlashCommand,
   handleSlashCommand,
+  loadCustomSlashCommands,
 } from "./slash-commands.js";
 import {
   parseLeadingSlashCommand,
@@ -60,6 +62,7 @@ interface SessionState {
   backendSessionId?: string;
   modeId: SessionModeId;
   modelId?: string;
+  customCommands: CustomSlashCommand[];
   cancelled: boolean;
   activeRun?: {
     cancel: () => void;
@@ -197,6 +200,7 @@ export class CursorAcpAgent implements Agent {
         session,
         auth: this.auth,
         listModels: async () => await this.runner.listModels(),
+        customCommands: session.customCommands,
         onModeChanged: async (modeId) => {
           await this.client.sessionUpdate({
             sessionId: session.sessionId,
@@ -209,6 +213,10 @@ export class CursorAcpAgent implements Agent {
       });
 
       if (handled.handled) {
+        if (session.cancelled) {
+          return { stopReason: "cancelled" };
+        }
+
         if (handled.responseText) {
           await this.client.sessionUpdate({
             sessionId: session.sessionId,
@@ -221,6 +229,11 @@ export class CursorAcpAgent implements Agent {
             },
           });
         }
+
+        if (session.cancelled) {
+          return { stopReason: "cancelled" };
+        }
+
         return { stopReason: "end_turn" };
       }
     }
@@ -231,7 +244,12 @@ export class CursorAcpAgent implements Agent {
       false,
     );
 
+    if (firstAttempt.stopReason === "cancelled" || session.cancelled) {
+      return { stopReason: "cancelled" };
+    }
+
     if (
+      firstAttempt.stopReason === "end_turn" &&
       (session.modeId === "default" || session.modeId === "acceptEdits") &&
       firstAttempt.rejectedToolCalls.length > 0
     ) {
@@ -239,6 +257,10 @@ export class CursorAcpAgent implements Agent {
         session.sessionId,
         firstAttempt.rejectedToolCalls[0],
       );
+
+      if (session.cancelled) {
+        return { stopReason: "cancelled" };
+      }
 
       if (approved === "allow_always") {
         session.modeId = "bypassPermissions";
@@ -323,6 +345,7 @@ export class CursorAcpAgent implements Agent {
       backendSessionId: params.backendSessionId,
       modeId,
       modelId,
+      customCommands: [],
       cancelled: false,
     };
 
@@ -338,6 +361,7 @@ export class CursorAcpAgent implements Agent {
     }
 
     const models = await this.getAvailableModels(session);
+    session.customCommands = await this.getAvailableSlashCommands(session.cwd);
     this.sessions[session.sessionId] = session;
 
     setTimeout(() => {
@@ -345,7 +369,7 @@ export class CursorAcpAgent implements Agent {
         sessionId: session.sessionId,
         update: {
           sessionUpdate: "available_commands_update",
-          availableCommands: availableSlashCommands(),
+          availableCommands: availableSlashCommands(session.customCommands),
         },
       });
     }, 0);
@@ -382,6 +406,20 @@ export class CursorAcpAgent implements Agent {
       availableModels,
       currentModelId: session.modelId,
     };
+  }
+
+  private async getAvailableSlashCommands(
+    workspace: string,
+  ): Promise<CustomSlashCommand[]> {
+    try {
+      return await loadCustomSlashCommands(workspace);
+    } catch (error) {
+      this.logger.error(
+        "[cursor-acp] Unable to load custom slash commands",
+        error,
+      );
+      return [];
+    }
   }
 
   private modeToRunnerOptions(

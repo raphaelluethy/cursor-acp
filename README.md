@@ -18,7 +18,7 @@ This is an `ai-assisted` personal project aimed at bringing a great AI coding ag
 - **File Mentions**: Converts `@` file/resource mentions to the appropriate format
 - **Tool Call Streaming**: Real-time ACP tool updates during execution
 - **Plan Updates**: TODO updates mapped to ACP plans
-- **Slash Commands**: Built-in adapter commands for control and configuration
+- **Slash Commands**: Built-in adapter commands plus workspace/global custom slash commands
 
 ## Slash Commands
 
@@ -30,6 +30,12 @@ This is an `ai-assisted` personal project aimed at bringing a great AI coding ag
 | `/status` | Show authentication and session status |
 | `/login`  | Authenticate with Cursor               |
 | `/logout` | Sign out of Cursor                     |
+
+Custom slash commands are loaded from:
+- `<workspace>/.cursor/commands/*.md`
+- `~/.cursor/commands/*.md`
+
+If both locations define the same command name, the workspace command wins.
 
 ## Installation
 

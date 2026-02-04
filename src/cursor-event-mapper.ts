@@ -164,8 +164,25 @@ export function mapCursorEventToAcp(
         cached.payload.args,
         result,
       );
+      const status = isRejectedToolResult(result) ? "failed" : "completed";
 
       const isTodoUpdate = cached.payload.toolName === "updateTodosToolCall";
+      notifications.push({
+        sessionId: context.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId,
+          status,
+          rawOutput: result,
+          _meta: {
+            cursorCli: {
+              toolName: cached.payload.toolName,
+            },
+          },
+          ...(isTodoUpdate ? {} : infoUpdate),
+        },
+      });
+
       if (isTodoUpdate) {
         const entries = planEntriesFromCursorTodos(result);
         notifications.push({
@@ -175,23 +192,9 @@ export function mapCursorEventToAcp(
             entries,
           },
         });
-      } else {
-        notifications.push({
-          sessionId: context.sessionId,
-          update: {
-            sessionUpdate: "tool_call_update",
-            toolCallId,
-            status: isRejectedToolResult(result) ? "failed" : "completed",
-            rawOutput: result,
-            _meta: {
-              cursorCli: {
-                toolName: cached.payload.toolName,
-              },
-            },
-            ...infoUpdate,
-          },
-        });
       }
+
+      delete context.toolUseCache[toolCallId];
 
       if (isRejectedToolResult(result)) {
         const info = toolInfoFromCursorToolCall(
