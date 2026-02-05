@@ -63,6 +63,133 @@ function baseToolName(name: string): string {
   return name.endsWith("ToolCall") ? name.slice(0, -"ToolCall".length) : name;
 }
 
+function extractText(value: unknown): string | null {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((entry) => {
+        if (typeof entry === "string") {
+          return entry;
+        }
+        if (isObject(entry)) {
+          if (typeof entry.text === "string") {
+            return entry.text;
+          }
+          if (typeof entry.content === "string") {
+            return entry.content;
+          }
+        }
+        return null;
+      })
+      .filter((entry): entry is string => Boolean(entry));
+
+    if (parts.length > 0) {
+      return parts.join("\n");
+    }
+  }
+
+  if (isObject(value)) {
+    if (typeof value.text === "string" && value.text.length > 0) {
+      return value.text;
+    }
+    if (typeof value.content === "string" && value.content.length > 0) {
+      return value.content;
+    }
+    if (typeof value.message === "string" && value.message.length > 0) {
+      return value.message;
+    }
+    if (typeof value.output === "string" && value.output.length > 0) {
+      return value.output;
+    }
+  }
+
+  return null;
+}
+
+function extractTextFromRecord(record: Record<string, unknown>): string | null {
+  const interleaved = extractText(record.interleavedOutput);
+  if (interleaved) {
+    return interleaved;
+  }
+
+  const stdout = extractText(record.stdout);
+  const stderr = extractText(record.stderr);
+
+  if (stdout || stderr) {
+    if (stdout && stderr) {
+      return `${stdout}${stdout.endsWith("\n") ? "" : "\n"}${stderr}`;
+    }
+    return stdout ?? stderr ?? null;
+  }
+
+  const keys = [
+    "content",
+    "text",
+    "output",
+    "result",
+    "message",
+    "lines",
+    "fileOutput",
+    "fileOutputPath",
+  ];
+  for (const key of keys) {
+    const text = extractText(record[key]);
+    if (text) {
+      return text;
+    }
+  }
+
+  return null;
+}
+
+function textContent(text: string): ToolCallContent[] {
+  return [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: markdownEscape(text),
+      },
+    },
+  ];
+}
+
+export function extractToolResultOutputText(
+  result: Record<string, unknown> | undefined,
+): string | null {
+  if (!result) {
+    return null;
+  }
+
+  if (isObject(result.success)) {
+    const successText = extractTextFromRecord(result.success);
+    if (successText) {
+      return successText;
+    }
+  }
+
+  if (isObject(result.error)) {
+    const errorText = extractTextFromRecord(result.error);
+    if (errorText) {
+      return errorText;
+    }
+  }
+
+  if (isObject(result.rejected)) {
+    const rejectedText = extractTextFromRecord(result.rejected);
+    if (rejectedText) {
+      return rejectedText;
+    }
+  }
+
+  return extractTextFromRecord(result);
+}
+
+// Intentionally no shell-specific formatting here; ACP UI renders the tool output.
+
 function describeShellCommand(args: Record<string, unknown>): {
   title: string;
   content: ToolCallContent[];
@@ -207,28 +334,17 @@ function genericResultContent(
 
   if (isObject(result.success)) {
     const success = result.success;
-    if (typeof success.stdout === "string" && success.stdout.length > 0) {
-      return [
-        {
-          type: "content",
-          content: {
-            type: "text",
-            text: markdownEscape(success.stdout),
-          },
-        },
-      ];
+    const text = extractTextFromRecord(success);
+    if (text) {
+      return textContent(text);
     }
+  }
 
-    if (typeof success.content === "string" && success.content.length > 0) {
-      return [
-        {
-          type: "content",
-          content: {
-            type: "text",
-            text: markdownEscape(success.content),
-          },
-        },
-      ];
+  if (isObject(result.error)) {
+    const error = result.error;
+    const text = extractTextFromRecord(error);
+    if (text) {
+      return textContent(text);
     }
   }
 
@@ -236,15 +352,23 @@ function genericResultContent(
     const rejected = result.rejected;
     const command =
       typeof rejected.command === "string" ? rejected.command : "tool";
+    const reason = extractTextFromRecord(rejected);
     return [
       {
         type: "content",
         content: {
           type: "text",
-          text: markdownEscape(`Rejected: ${command}`),
+          text: markdownEscape(
+            reason ? `Rejected: ${command}\n${reason}` : `Rejected: ${command}`,
+          ),
         },
       },
     ];
+  }
+
+  const topLevelText = extractTextFromRecord(result);
+  if (topLevelText) {
+    return textContent(topLevelText);
   }
 
   return [
@@ -266,6 +390,13 @@ export function toolUpdateFromCursorToolResult(
   const toolName = baseToolName(toolNameRaw);
 
   switch (toolName) {
+    case "shell": {
+      const outputText = extractToolResultOutputText(result);
+      return {
+        content: textContent(outputText ?? "Command completed with no output."),
+      };
+    }
+
     case "edit": {
       const content = maybeDiffContentFromEditResult(args, result);
       const path = typeof args.path === "string" ? args.path : undefined;

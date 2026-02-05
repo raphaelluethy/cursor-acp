@@ -133,7 +133,7 @@ export async function loadCustomSkills(
 ): Promise<CustomSkill[]> {
   const skillRoots: Array<{ root: string; origin: SkillOrigin }> = [
     { root: path.join(workspace, ".cursor", "skills"), origin: "workspace" },
-    { root: path.join(homeDirectory, ".cursor", "skills"), origin: "user" },
+    { root: path.join(homeDirectory, ".agents", "skills"), origin: "user" },
     {
       root: path.join(homeDirectory, ".cursor", "skills-cursor"),
       origin: "cursor",

@@ -1,9 +1,10 @@
 import { SessionNotification } from "@agentclientprotocol/sdk";
 import { CursorStreamEvent } from "./cursor-cli-runner.js";
-import { Logger, sanitizeToolCallId } from "./utils.js";
+import { Logger, isObject, sanitizeToolCallId } from "./utils.js";
 import {
   CursorToolPayload,
   extractCursorToolPayload,
+  extractToolResultOutputText,
   isRejectedToolResult,
   planEntriesFromCursorTodos,
   toolInfoFromCursorToolCall,
@@ -32,6 +33,34 @@ export interface MappingResult {
   backendSessionId?: string;
   currentModeId?: string;
   rejectedToolCall?: RejectedToolCall;
+}
+
+function formatShellToolResponse(
+  result: Record<string, unknown> | undefined,
+  outputText: string | null,
+): string {
+  const text = outputText ?? "Command completed with no output.";
+  const success = result && isObject(result.success) ? result.success : null;
+  const exitCode = success && typeof success.exitCode === "number"
+    ? success.exitCode
+    : undefined;
+  const signal =
+    success && typeof success.signal === "string" && success.signal.length > 0
+      ? success.signal
+      : undefined;
+
+  let prefix = "";
+  if (typeof exitCode === "number") {
+    prefix += `Exited with code ${exitCode}.`;
+  }
+  if (signal) {
+    prefix += `${prefix ? " " : ""}Signal \`${signal}\`. `;
+  }
+  if (prefix) {
+    prefix += "Final output:\n\n";
+  }
+
+  return prefix ? `${prefix}${text}` : text;
 }
 
 function assistantTextChunks(event: CursorStreamEvent): string[] {
@@ -166,6 +195,14 @@ export function mapCursorEventToAcp(
       );
       const status = isRejectedToolResult(result) ? "failed" : "completed";
 
+      const isShellTool = cached.payload.toolName === "shellToolCall";
+      const shellOutputText = isShellTool
+        ? extractToolResultOutputText(result)
+        : null;
+      const shellToolResponseText = isShellTool
+        ? formatShellToolResponse(result, shellOutputText)
+        : null;
+
       const isTodoUpdate = cached.payload.toolName === "updateTodosToolCall";
       notifications.push({
         sessionId: context.sessionId,
@@ -173,13 +210,29 @@ export function mapCursorEventToAcp(
           sessionUpdate: "tool_call_update",
           toolCallId,
           status,
-          rawOutput: result,
+          rawOutput: isShellTool
+            ? (shellOutputText ?? "Command completed with no output.")
+            : result,
           _meta: {
             cursorCli: {
               toolName: cached.payload.toolName,
+              rawResult: isShellTool ? result : undefined,
             },
+            ...(shellToolResponseText
+              ? {
+                  claudeCode: {
+                    toolName: cached.payload.toolName,
+                    toolResponse: [
+                      {
+                        type: "text",
+                        text: shellToolResponseText,
+                      },
+                    ],
+                  },
+                }
+              : {}),
           },
-          ...(isTodoUpdate ? {} : infoUpdate),
+          ...infoUpdate,
         },
       });
 

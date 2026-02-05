@@ -32,16 +32,26 @@ This is an `ai-assisted` personal project aimed at bringing a great AI coding ag
 | `/logout` | Sign out of Cursor                     |
 
 Custom slash commands are loaded from:
+
 - `<workspace>/.cursor/commands/*.md`
 - `~/.cursor/commands/*.md`
 
 If both locations define the same command name, the workspace command wins.
 
+## Skills
+
+Custom skills are loaded from:
+
+- `<workspace>/.cursor/skills/**/skill.md`
+- `~/.agents/skills/**/skill.md`
+
+If multiple locations define the same skill name, the workspace skill wins.
+
 ## Installation
 
 ```bash
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 ## Usage
@@ -49,7 +59,7 @@ npm run build
 ### Run directly
 
 ```bash
-npm start
+bun run start
 ```
 
 Or use the binary:
@@ -61,23 +71,23 @@ cursor-acp
 ### Development
 
 ```bash
-npm run dev
+bun run dev
 ```
 
 ### Testing
 
 ```bash
-npm test           # Run tests in watch mode
-npm run test:run   # Run tests once
+bun run test           # Run tests in watch mode
+bun run test:run       # Run tests once
 ```
 
 ### Linting & Formatting
 
 ```bash
-npm run lint       # Check for linting issues
-npm run lint:fix   # Auto-fix linting issues
-npm run format     # Format code with Prettier
-npm run check      # Run lint and format checks
+bun run lint        # Check for linting issues
+bun run lint:fix    # Auto-fix linting issues
+bun run format      # Format code with oxfmt
+bun run check       # Run lint and format checks
 ```
 
 ## Project Structure
@@ -105,6 +115,7 @@ The adapter uses Cursor CLI with `--print --output-format stream-json` flags for
 ## Requirements
 
 - Node.js 18+
+- Bun (for package management and scripts)
 - Cursor CLI installed and available in PATH
 - Valid Cursor authentication
 

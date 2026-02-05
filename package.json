@@ -26,16 +26,22 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "npm run build && npm run start",
-    "lint": "eslint src --ext .ts",
-    "lint:fix": "eslint src --ext .ts --fix",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "check": "npm run lint && npm run format:check",
+    "dev": "bun run build && node dist/index.js",
+    "lint": "oxlint src",
+    "lint:fix": "oxlint src --fix",
+    "lint:eslint": "eslint src --ext .ts",
+    "lint:eslint:fix": "eslint src --ext .ts --fix",
+    "format": "oxfmt --write src/**/*.ts",
+    "format:check": "oxfmt --check src/**/*.ts",
+    "format:prettier": "prettier --write .",
+    "format:prettier:check": "prettier --check .",
+    "typecheck": "tsgo --noEmit",
+    "check": "bun run lint && bun run format:check",
+    "check:legacy": "bun run lint:eslint && bun run format:prettier:check",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "bun run build"
   },
   "keywords": [
     "cursor",
@@ -46,7 +52,10 @@
   ],
   "license": "Apache-2.0",
   "dependencies": {
-    "@agentclientprotocol/sdk": "0.13.1"
+    "@agentclientprotocol/sdk": "0.13.1",
+    "@typescript/native-preview": "^7.0.0-dev.20260204.1",
+    "oxfmt": "^0.28.0",
+    "oxlint": "^1.43.0"
   },
   "devDependencies": {
     "@types/node": "25.2.0",
@@ -55,6 +64,7 @@
     "eslint": "9.39.2",
     "eslint-config-prettier": "10.1.8",
     "globals": "17.3.0",
+    "oxlint-tsgolint": "^0.11.4",
     "prettier": "3.8.1",
     "typescript": "5.9.3",
     "vitest": "4.0.18"

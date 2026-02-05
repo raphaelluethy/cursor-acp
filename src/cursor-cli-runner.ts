@@ -157,6 +157,8 @@ export class CursorCliRunner {
     let resultEvent: CursorStreamEvent | undefined;
     let settled = false;
     let processing: Promise<void> = Promise.resolve();
+    const RESULT_EVENT_GRACE_MS = 500;
+    let resultEventTimer: NodeJS.Timeout | null = null;
 
     let resolveDone: ((result: RunPromptResult) => void) | null = null;
     let rejectDone: ((err: Error) => void) | null = null;
@@ -166,8 +168,15 @@ export class CursorCliRunner {
       rejectDone = reject;
     });
 
+    const clearResultTimer = (): void => {
+      if (resultEventTimer) {
+        clearTimeout(resultEventTimer);
+        resultEventTimer = null;
+      }
+    };
+
     const processLine = async (line: string): Promise<void> => {
-      if (!line.trim()) {
+      if (settled || !line.trim()) {
         return;
       }
 
@@ -188,11 +197,43 @@ export class CursorCliRunner {
       if (onEvent) {
         await onEvent(parsed);
       }
+
+      if (resultEvent) {
+        clearResultTimer();
+        resultEventTimer = setTimeout(() => {
+          void processing
+            .then(() => {
+              if (settled || !resultEvent) {
+                return;
+              }
+              succeed({
+                events,
+                resultEvent,
+                stderr,
+                exitCode: child.exitCode ?? 0,
+              });
+              if (!child.killed) {
+                child.kill("SIGTERM");
+              }
+              const killTimer = setTimeout(() => {
+                if (!child.killed) {
+                  child.kill("SIGKILL");
+                }
+              }, 1000);
+              killTimer.unref?.();
+            })
+            .catch((error) => {
+              fail(error as Error);
+            });
+        }, RESULT_EVENT_GRACE_MS);
+        resultEventTimer.unref?.();
+      }
     };
 
     const fail = (error: Error): void => {
       if (!settled) {
         settled = true;
+        clearResultTimer();
         if (rejectDone) {
           rejectDone(error);
         }
@@ -202,6 +243,7 @@ export class CursorCliRunner {
     const succeed = (result: RunPromptResult): void => {
       if (!settled) {
         settled = true;
+        clearResultTimer();
         if (resolveDone) {
           resolveDone(result);
         }
@@ -238,6 +280,7 @@ export class CursorCliRunner {
     child.on("close", (code) => {
       void (async () => {
         await processing;
+        clearResultTimer();
         if (stdoutBuffer.trim().length > 0) {
           await processLine(stdoutBuffer);
         }
