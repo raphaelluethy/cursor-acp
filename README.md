@@ -54,6 +54,33 @@ bun install
 bun run build
 ```
 
+This compiles the project and produces the `cursor-acp` binary entry point at `./dist/index.js`.
+
+### Adding to PATH
+
+For Zed to find the `cursor-acp` command, it needs to be available on your PATH. Choose one of the following options:
+
+**Option A — npm link (recommended)**
+
+Run `npm link` inside the repository root to symlink the `cursor-acp` binary globally:
+
+```bash
+npm link
+```
+
+**Option B — manual symlink**
+
+Create a symlink manually:
+
+```bash
+ln -s "$(pwd)/dist/index.js" /usr/local/bin/cursor-acp
+```
+
+Verify the binary is accessible:
+
+```bash
+which cursor-acp
+```
 ## Usage
 
 ### Run directly
@@ -67,6 +94,85 @@ Or use the binary:
 ```bash
 cursor-acp
 ```
+
+### Configuring Zed
+
+Open your Zed settings file via the Command Palette (`zed: open settings`) and add a custom agent server entry under `agent_servers`:
+
+```json
+{
+  "agent_servers": {
+    "Cursor": {
+      "type": "custom",
+      "command": "cursor-acp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+If `cursor-acp` is not on your PATH, use the full absolute path to the entry point instead:
+
+```json
+{
+  "agent_servers": {
+    "Cursor": {
+      "type": "custom",
+      "command": "/absolute/path/to/cursor-acp/dist/index.js",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+#### Environment Variables
+
+You can optionally set default mode and model via environment variables in the `"env"` object:
+
+- `CURSOR_ACP_DEFAULT_MODE` — one of `default`, `acceptEdits`, `plan`, `ask`, `bypassPermissions`
+- `CURSOR_ACP_DEFAULT_MODEL` — a model ID string (e.g. the model ID shown by `/model`)
+
+Example with defaults configured:
+
+```json
+{
+  "agent_servers": {
+    "Cursor": {
+      "type": "custom",
+      "command": "cursor-acp",
+      "args": [],
+      "env": {
+        "CURSOR_ACP_DEFAULT_MODE": "bypassPermissions"
+      }
+    }
+  }
+}
+```
+
+### Using in Zed
+
+1. Open the Agent Panel with `Cmd+?` (macOS) or `Ctrl+?` (Linux)
+2. Click the `+` button in the top right and select **Cursor**
+3. On first use, run the `/login` slash command to authenticate with Cursor
+
+You can also bind a keyboard shortcut to quickly open a new Cursor thread by adding the following to your `keymap.json` (open via `zed: open keymap file`):
+
+```json
+[
+  {
+    "bindings": {
+      "cmd-alt-u": ["agent::NewExternalAgentThread", { "agent": "Cursor" }]
+    }
+  }
+]
+```
+
+### Debugging
+
+If something isn't working, open Zed's Command Palette and run `dev: open acp logs` to inspect the ACP messages being sent between Zed and cursor-acp.
+
 
 ### Development
 
@@ -114,8 +220,9 @@ The adapter uses Cursor CLI with `--print --output-format stream-json` flags for
 
 ## Requirements
 
+- [Zed](https://zed.dev) 
 - Node.js 18+
-- Bun (for package management and scripts)
+- [Bun](https://bun.sh) (for package management and scripts)
 - Cursor CLI installed and available in PATH
 - Valid Cursor authentication
 
