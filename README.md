@@ -2,7 +2,7 @@
 
 Disclaimer: I am not affiliated with Cursor or Zed. This project is a personal experiment and should not be considered an official product of either company. I am a big fan of both products and wanted to combine what I like with both of them: An amazing editor and a great AI coding agent (and composer-1, holy this model flies xD).
 
-An [Agent Client Protocol (ACP)](https://github.com/AnyContext/agent-client-protocol) adapter for [Cursor](https://cursor.sh) Agent CLI, enabling Cursor's powerful AI coding assistant to be used within the [Zed](https://zed.dev) editor.
+An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) adapter for [Cursor](https://cursor.com) Agent CLI, enabling Cursor's powerful AI coding assistant to be used within the [Zed](https://zed.dev) editor.
 
 ## About
 
@@ -13,7 +13,7 @@ This is an `ai-assisted` personal project aimed at bringing a great AI coding ag
 ## Features
 
 - **ACP Session Lifecycle**: Supports `new`, `resume`, and `fork` (best-effort) session operations
-- **Session Persistence & History**: Conversation history is persisted to disk; when resuming a session, the full history is replayed so the client sees previous messages
+- **Session Persistence & History**: Conversation history is persisted to disk; when resuming a session, the full history is replayed so the client sees previous messages (⚠️ This feature is WIP on Zed's side, so this can break at any time, I will try to keep it up to date)
 - **Session Listing**: List past sessions (with optional cwd filter and pagination) for quick resume
 - **Model & Mode Switching**: Dynamically change the underlying model and operation mode
 - **Authentication**: Login/logout/status management via Cursor CLI
@@ -83,6 +83,7 @@ Verify the binary is accessible:
 ```bash
 which cursor-acp
 ```
+
 ## Usage
 
 ### Run directly
@@ -175,7 +176,6 @@ You can also bind a keyboard shortcut to quickly open a new Cursor thread by add
 
 If something isn't working, open Zed's Command Palette and run `dev: open acp logs` to inspect the ACP messages being sent between Zed and cursor-acp.
 
-
 ### Development
 
 ```bash
@@ -227,11 +227,11 @@ Sessions are persisted under `~/.cursor-acp/sessions/` (or `$CURSOR_ACP_CONFIG_D
 
 ## Requirements
 
-- [Zed](https://zed.dev) 
-- Node.js 18+
+- [Zed](https://zed.dev)
+- Node.js 25.6.1+
 - [Bun](https://bun.sh) (for package management and scripts)
 - Cursor CLI installed and available in PATH
-- Valid Cursor authentication
+- Valid Cursor subscription
 
 ## Acknowledgments
 
