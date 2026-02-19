@@ -13,6 +13,8 @@ This is an `ai-assisted` personal project aimed at bringing a great AI coding ag
 ## Features
 
 - **ACP Session Lifecycle**: Supports `new`, `resume`, and `fork` (best-effort) session operations
+- **Session Persistence & History**: Conversation history is persisted to disk; when resuming a session, the full history is replayed so the client sees previous messages
+- **Session Listing**: List past sessions (with optional cwd filter and pagination) for quick resume
 - **Model & Mode Switching**: Dynamically change the underlying model and operation mode
 - **Authentication**: Login/logout/status management via Cursor CLI
 - **File Mentions**: Converts `@` file/resource mentions to the appropriate format
@@ -102,6 +104,7 @@ src/
 ├── prompt-conversion.ts  # Converts ACP prompts to Cursor format
 ├── auth.ts               # Authentication handling
 ├── settings.ts           # Configuration management
+├── session-storage.ts    # Session persistence and history replay
 ├── slash-commands.ts     # Slash command handlers
 ├── tools.ts              # Tool definitions
 ├── utils.ts              # Utility functions
@@ -111,6 +114,10 @@ src/
 ## Configuration
 
 The adapter uses Cursor CLI with `--print --output-format stream-json` flags for streaming JSON output that gets mapped to ACP events.
+
+### Session Storage
+
+Sessions are persisted under `~/.cursor-acp/sessions/` (or `$CURSOR_ACP_CONFIG_DIR/sessions/` if set). Each project has an encoded subdirectory; session history is stored as JSONL files with user and assistant messages for resume and replay.
 
 ## Requirements
 
@@ -125,4 +132,4 @@ This project is based on [claude-code-acp](https://github.com/zed-industries/cla
 
 ## License
 
-Apache-2.0 - See [LICENSE](LICENSE) for details.
+Copyright 2026 Raphael Lüthy. Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full license text. Third-party attributions are listed in [NOTICE](NOTICE).
