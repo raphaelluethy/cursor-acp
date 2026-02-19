@@ -32,7 +32,7 @@ import { randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 import { CursorCliRunner } from "./cursor-cli-runner.js";
 import { CursorAuth, CursorAuthClient } from "./auth.js";
-import { mapCursorEventToAcp, RejectedToolCall } from "./cursor-event-mapper.js";
+import { CachedToolUse, mapCursorEventToAcp, RejectedToolCall } from "./cursor-event-mapper.js";
 import {
 	availableSlashCommands,
 	CustomSlashCommand,
@@ -567,7 +567,7 @@ export class CursorAcpAgent implements Agent {
 		forceRetry: boolean,
 	): Promise<PromptAttemptResult> {
 		const rejectedToolCalls: RejectedToolCall[] = [];
-		const toolUseCache: Record<string, { toolCallId: string; payload: any }> = {};
+		const toolUseCache: Record<string, CachedToolUse> = {};
 		const modeSettings = this.modeToRunnerOptions(session, forceRetry);
 		const assistantTextChunks: string[] = [];
 

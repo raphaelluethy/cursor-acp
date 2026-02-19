@@ -11,7 +11,7 @@ import {
 	toolUpdateFromCursorToolResult,
 } from "./tools.js";
 
-interface CachedToolUse {
+export interface CachedToolUse {
 	toolCallId: string;
 	payload: CursorToolPayload;
 }
@@ -63,10 +63,10 @@ function formatShellToolResponse(
 
 function assistantTextChunks(event: CursorStreamEvent): string[] {
 	const message = event.message;
-	if (!message || typeof message !== "object") {
+	if (!isObject(message)) {
 		return [];
 	}
-	const content = (message as any).content;
+	const content = message.content;
 	if (!Array.isArray(content)) {
 		return [];
 	}
