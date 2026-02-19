@@ -159,6 +159,8 @@ export class CursorCliRunner {
     let processing: Promise<void> = Promise.resolve();
     const RESULT_EVENT_GRACE_MS = 500;
     let resultEventTimer: NodeJS.Timeout | null = null;
+    const pendingToolCalls = new Set<string>();
+    let anonymousPendingToolCalls = 0;
 
     let resolveDone: ((result: RunPromptResult) => void) | null = null;
     let rejectDone: ((err: Error) => void) | null = null;
@@ -190,6 +192,28 @@ export class CursorCliRunner {
       }
 
       events.push(parsed);
+
+      if (parsed.type === "tool_call") {
+        const callId =
+          typeof parsed.call_id === "string" && parsed.call_id.length > 0
+            ? parsed.call_id
+            : null;
+        if (parsed.subtype === "started") {
+          if (callId) {
+            pendingToolCalls.add(callId);
+          } else {
+            anonymousPendingToolCalls += 1;
+          }
+        }
+        if (parsed.subtype === "completed") {
+          if (callId) {
+            pendingToolCalls.delete(callId);
+          } else if (anonymousPendingToolCalls > 0) {
+            anonymousPendingToolCalls -= 1;
+          }
+        }
+      }
+
       if (parsed.type === "result") {
         resultEvent = parsed;
       }
@@ -198,7 +222,11 @@ export class CursorCliRunner {
         await onEvent(parsed);
       }
 
-      if (resultEvent) {
+      if (
+        resultEvent &&
+        pendingToolCalls.size === 0 &&
+        anonymousPendingToolCalls === 0
+      ) {
         clearResultTimer();
         resultEventTimer = setTimeout(() => {
           void processing

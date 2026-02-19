@@ -57,6 +57,15 @@ import {
   SessionModeId,
   SUPPORTED_MODE_IDS,
 } from "./settings.js";
+import {
+  findSessionFile,
+  listSessions,
+  readSessionMeta,
+  recordAssistantMessage,
+  recordSessionMeta,
+  recordUserMessage,
+  replaySessionHistory,
+} from "./session-storage.js";
 import { Logger, unreachable } from "./utils.js";
 
 interface SessionState {
@@ -161,20 +170,97 @@ export class CursorAcpAgent implements Agent {
   async unstable_resumeSession(
     params: ResumeSessionRequest,
   ): Promise<ResumeSessionResponse> {
-    return await this.createSession({
+    const filePath = await findSessionFile(params.sessionId, params.cwd);
+    const { backendSessionId } = filePath
+      ? await readSessionMeta(filePath)
+      : { backendSessionId: undefined };
+
+    const response = await this.createSession({
       sessionId: params.sessionId,
       cwd: params.cwd,
-      backendSessionId: params.sessionId,
+      backendSessionId: backendSessionId ?? params.sessionId,
     });
+
+    // Replay session history so the client sees previous messages
+    if (filePath) {
+      await replaySessionHistory({
+        sessionId: params.sessionId,
+        filePath,
+        sendNotification: async (notification) => {
+          await this.client.sessionUpdate(notification);
+        },
+      });
+    }
+
+    return response;
   }
 
   async unstable_listSessions(
-    _params: ListSessionsRequest,
+    params: ListSessionsRequest,
   ): Promise<ListSessionsResponse> {
-    this.logger.warn?.(
-      "[cursor-acp] unstable_listSessions is intentionally disabled for cursor-acp.",
-    );
-    return { sessions: [] };
+    const PAGE_SIZE = 50;
+    const sessions = await listSessions(params.cwd ?? undefined);
+
+    let startIndex = 0;
+    if (params.cursor) {
+      try {
+        const decoded = Buffer.from(params.cursor, "base64").toString("utf-8");
+        const cursorData = JSON.parse(decoded) as { offset?: unknown };
+        if (typeof cursorData.offset === "number" && cursorData.offset >= 0) {
+          startIndex = cursorData.offset;
+        }
+      } catch {
+        // Invalid cursor, start from the beginning.
+      }
+    }
+
+    const pageOfSessions = sessions.slice(startIndex, startIndex + PAGE_SIZE);
+    const hasMore = startIndex + PAGE_SIZE < sessions.length;
+
+    if (!hasMore) {
+      return { sessions: pageOfSessions };
+    }
+
+    const nextCursor = Buffer.from(
+      JSON.stringify({ offset: startIndex + PAGE_SIZE }),
+    ).toString("base64");
+
+    return {
+      sessions: pageOfSessions,
+      nextCursor,
+    };
+  }
+
+  async loadSession(params: {
+    sessionId: string;
+    cwd: string;
+    mcpServers?: unknown[];
+  }): Promise<{ modes: NewSessionResponse["modes"]; models: NewSessionResponse["models"] }> {
+    const filePath = await findSessionFile(params.sessionId, params.cwd);
+    if (!filePath) {
+      throw new Error("Session not found");
+    }
+
+    const { backendSessionId } = await readSessionMeta(filePath);
+
+    const response = await this.createSession({
+      sessionId: params.sessionId,
+      cwd: params.cwd,
+      backendSessionId: backendSessionId ?? params.sessionId,
+    });
+
+    await replaySessionHistory({
+      sessionId: params.sessionId,
+      filePath,
+      sendNotification: async (notification) => {
+        await this.client.sessionUpdate(notification);
+      },
+    });
+
+    return {
+      modes: response.modes,
+      models: response.models,
+    };
   }
 
   async authenticate(_params: AuthenticateRequest): Promise<void> {
@@ -197,6 +283,9 @@ export class CursorAcpAgent implements Agent {
 
     session.cancelled = false;
     let promptText = promptToCursorText(params);
+
+    // Record user message to session history
+    await recordUserMessage(session.cwd, session.sessionId, promptText);
 
     const slash = parseLeadingSlashCommand(promptText);
     if (slash.hasSlash) {
@@ -384,6 +473,13 @@ export class CursorAcpAgent implements Agent {
       }
     }
 
+    // Persist session metadata so loadSession can recover the backendSessionId
+    try {
+      await recordSessionMeta(params.cwd, params.sessionId, session.backendSessionId);
+    } catch (error) {
+      this.logger.error("[cursor-acp] Failed to record session meta", error);
+    }
+
     const models = await this.getAvailableModels(session);
     session.customCommands = await this.getAvailableSlashCommands(session.cwd);
     session.skills = await this.getAvailableSkills(session.cwd);
@@ -499,6 +595,7 @@ export class CursorAcpAgent implements Agent {
     const toolUseCache: Record<string, { toolCallId: string; payload: any }> =
       {};
     const modeSettings = this.modeToRunnerOptions(session, forceRetry);
+    const assistantTextChunks: string[] = [];
 
     const run = this.runner.startPrompt({
       workspace: session.cwd,
@@ -530,6 +627,13 @@ export class CursorAcpAgent implements Agent {
         }
 
         for (const notification of mapped.notifications) {
+          // Collect assistant text for history recording
+          if (
+            notification.update.sessionUpdate === "agent_message_chunk" &&
+            notification.update.content?.type === "text"
+          ) {
+            assistantTextChunks.push(notification.update.content.text);
+          }
           await this.client.sessionUpdate(notification);
         }
       },
@@ -561,6 +665,14 @@ export class CursorAcpAgent implements Agent {
       const isError = resultEvent.is_error === true;
 
       if (subtype === "success" && !isError) {
+        // Record assistant response to session history
+        if (assistantTextChunks.length > 0) {
+          await recordAssistantMessage(
+            session.cwd,
+            session.sessionId,
+            assistantTextChunks.join(""),
+          );
+        }
         return {
           stopReason: "end_turn",
           rejectedToolCalls,

@@ -5,7 +5,7 @@
     "": {
       "name": "@raphael/cursor-acp",
       "dependencies": {
-        "@agentclientprotocol/sdk": "0.13.1",
+        "@agentclientprotocol/sdk": "^0.13.1",
         "@typescript/native-preview": "^7.0.0-dev.20260204.1",
         "oxfmt": "^0.28.0",
         "oxlint": "^1.43.0",
