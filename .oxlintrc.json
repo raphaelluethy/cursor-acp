@@ -1,11 +1,22 @@
 {
-    "$schema": "./node_modules/oxlint/configuration_schema.json",
-    "plugins": ["import", "typescript", "unicorn", "react", "react-hooks", "jsdoc", "node", "security", "promise", "vitest", "jest", "jsx-a11y"],
-    "rules": {
-        "eqeqeq": "error",
-        "no-var": "error",
-        "prefer-const": "error",
-        "curly": "error"
-    },
-    "ignorePatterns": ["node_modules/**", "dist/**", "coverage/**", "*.min.js"]
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "import",
+    "typescript",
+    "unicorn",
+    "react",
+    "jsdoc",
+    "node",
+    "promise",
+    "vitest",
+    "jest",
+    "jsx-a11y"
+  ],
+  "rules": {
+    "eqeqeq": "error",
+    "no-var": "error",
+    "prefer-const": "error",
+    "curly": "error"
+  },
+  "ignorePatterns": ["node_modules/**", "dist/**", "coverage/**", "*.min.js"]
 }
