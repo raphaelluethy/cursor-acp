@@ -73,7 +73,12 @@ function assistantTextChunks(event: CursorStreamEvent): string[] {
 
 	const chunks: string[] = [];
 	for (const item of content) {
-		if (item && typeof item === "object" && item.type === "text" && typeof item.text === "string") {
+		if (
+			item &&
+			typeof item === "object" &&
+			item.type === "text" &&
+			typeof item.text === "string"
+		) {
 			chunks.push(item.text);
 		}
 	}
@@ -240,7 +245,10 @@ export function mapCursorEventToAcp(
 			delete context.toolUseCache[toolCallId];
 
 			if (isRejectedToolResult(result)) {
-				const info = toolInfoFromCursorToolCall(cached.payload.toolName, cached.payload.args);
+				const info = toolInfoFromCursorToolCall(
+					cached.payload.toolName,
+					cached.payload.args,
+				);
 				return {
 					notifications,
 					rejectedToolCall: {

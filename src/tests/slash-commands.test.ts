@@ -110,15 +110,20 @@ describe("slash commands", () => {
 	});
 
 	it("expands custom slash command template placeholders", () => {
-		const prompt = resolveCustomSlashCommandPrompt("commit", 'feat(parser) "improve tokenizer"', [
-			{
-				name: "commit",
-				description: "Generate commit message",
-				argumentHint: "<scope> <subject>",
-				template: "Write a commit.\nScope: $1\nSubject: $2\nRaw: $ARGUMENTS\nPrice: $$20",
-				sourcePath: "/tmp/commit.md",
-			},
-		]);
+		const prompt = resolveCustomSlashCommandPrompt(
+			"commit",
+			'feat(parser) "improve tokenizer"',
+			[
+				{
+					name: "commit",
+					description: "Generate commit message",
+					argumentHint: "<scope> <subject>",
+					template:
+						"Write a commit.\nScope: $1\nSubject: $2\nRaw: $ARGUMENTS\nPrice: $$20",
+					sourcePath: "/tmp/commit.md",
+				},
+			],
+		);
 
 		expect(prompt).toContain("Scope: feat(parser)");
 		expect(prompt).toContain("Subject: improve tokenizer");

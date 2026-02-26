@@ -32,15 +32,21 @@ describe("skills", () => {
 
 		await writeFile(
 			path.join(userSkill, "SKILL.md"),
-			["---", "name: user-skill", "description: User skill", "---", "User skill body"].join("\n"),
+			["---", "name: user-skill", "description: User skill", "---", "User skill body"].join(
+				"\n",
+			),
 			"utf8",
 		);
 
 		await writeFile(
 			path.join(cursorSkill, "SKILL.md"),
-			["---", "name: cursor-skill", "description: Cursor skill", "---", "Cursor skill body"].join(
-				"\n",
-			),
+			[
+				"---",
+				"name: cursor-skill",
+				"description: Cursor skill",
+				"---",
+				"Cursor skill body",
+			].join("\n"),
 			"utf8",
 		);
 

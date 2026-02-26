@@ -190,7 +190,9 @@ export class CursorCliRunner {
 
 			if (parsed.type === "tool_call") {
 				const callId =
-					typeof parsed.call_id === "string" && parsed.call_id.length > 0 ? parsed.call_id : null;
+					typeof parsed.call_id === "string" && parsed.call_id.length > 0
+						? parsed.call_id
+						: null;
 				if (parsed.subtype === "started") {
 					if (callId) {
 						pendingToolCalls.add(callId);

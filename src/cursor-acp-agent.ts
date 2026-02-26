@@ -628,7 +628,10 @@ export class CursorAcpAgent implements Agent {
 
 			const resultEvent = completed.resultEvent;
 			if (!resultEvent) {
-				throw RequestError.internalError(undefined, "Cursor CLI did not emit a result event");
+				throw RequestError.internalError(
+					undefined,
+					"Cursor CLI did not emit a result event",
+				);
 			}
 
 			const subtype = typeof resultEvent.subtype === "string" ? resultEvent.subtype : "";
@@ -660,7 +663,8 @@ export class CursorAcpAgent implements Agent {
 				};
 			}
 
-			const resultText = typeof resultEvent.result === "string" ? resultEvent.result : subtype;
+			const resultText =
+				typeof resultEvent.result === "string" ? resultEvent.result : subtype;
 			throw RequestError.internalError(undefined, resultText || "Cursor CLI failed");
 		} catch (error) {
 			session.activeRun = undefined;

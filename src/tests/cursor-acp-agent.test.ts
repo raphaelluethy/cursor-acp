@@ -409,7 +409,9 @@ describe("CursorAcpAgent", () => {
 			} as any);
 
 			expect(response.stopReason).toBe("end_turn");
-			expect(promptText).toBe("Write a concise conventional commit message.\nScope: feat(parser)");
+			expect(promptText).toBe(
+				"Write a concise conventional commit message.\nScope: feat(parser)",
+			);
 		} finally {
 			await rm(tempRoot, { recursive: true, force: true });
 		}

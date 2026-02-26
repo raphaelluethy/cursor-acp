@@ -16,7 +16,10 @@ export interface CommandRunner {
 export class AgentCommandRunner implements CommandRunner {
 	constructor(private readonly command: string = "agent") {}
 
-	async run(args: string[], options?: { cwd?: string; env?: Environment }): Promise<CommandResult> {
+	async run(
+		args: string[],
+		options?: { cwd?: string; env?: Environment },
+	): Promise<CommandResult> {
 		return await new Promise<CommandResult>((resolve, reject) => {
 			const child = spawn(this.command, args, {
 				cwd: options?.cwd,

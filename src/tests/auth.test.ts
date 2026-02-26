@@ -5,9 +5,7 @@ describe("parseAuthStatus", () => {
 	it("parses logged in output", () => {
 		const parsed = parseAuthStatus("✓ Logged in as user@example.com");
 		expect(parsed.loggedIn).toBe(true);
-		if (parsed.loggedIn) {
-			expect(parsed.account).toBe("user@example.com");
-		}
+		expect((parsed as { loggedIn: true; account: string }).account).toBe("user@example.com");
 	});
 
 	it("parses not logged in output", () => {
@@ -20,8 +18,6 @@ describe("parseAuthStatus", () => {
 			"\u001b[2K\u001b[GChecking...\n\u001b[2K\n✓ Logged in as me@site.com\n",
 		);
 		expect(parsed.loggedIn).toBe(true);
-		if (parsed.loggedIn) {
-			expect(parsed.account).toBe("me@site.com");
-		}
+		expect((parsed as { loggedIn: true; account: string }).account).toBe("me@site.com");
 	});
 });

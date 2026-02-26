@@ -342,7 +342,9 @@ function genericResultContent(result: Record<string, unknown> | undefined): Tool
 				type: "content",
 				content: {
 					type: "text",
-					text: markdownEscape(reason ? `Rejected: ${command}\n${reason}` : `Rejected: ${command}`),
+					text: markdownEscape(
+						reason ? `Rejected: ${command}\n${reason}` : `Rejected: ${command}`,
+					),
 				},
 			},
 		];

@@ -187,7 +187,9 @@ export async function findSessionFile(sessionId: string, cwd: string): Promise<s
 		for (const encodedPath of projectDirs) {
 			const projectDir = path.join(sessionsDir, encodedPath);
 			const stat = await fs.promises.stat(projectDir);
-			if (!stat.isDirectory()) continue;
+			if (!stat.isDirectory()) {
+				continue;
+			}
 
 			const candidatePath = path.join(projectDir, fileName);
 			try {
@@ -266,9 +268,13 @@ export async function listSessions(cwd?: string): Promise<SessionInfo[]> {
 		for (const encodedPath of projectDirs) {
 			const projectDir = path.join(sessionsDir, encodedPath);
 			const stat = await fs.promises.stat(projectDir);
-			if (!stat.isDirectory()) continue;
+			if (!stat.isDirectory()) {
+				continue;
+			}
 
-			if (encodedCwdFilter && encodedPath !== encodedCwdFilter) continue;
+			if (encodedCwdFilter && encodedPath !== encodedCwdFilter) {
+				continue;
+			}
 
 			const files = await fs.promises.readdir(projectDir);
 			const jsonlFiles = files.filter((f) => f.endsWith(".jsonl") && !f.startsWith("agent-"));
@@ -295,7 +301,10 @@ export async function listSessions(cwd?: string): Promise<SessionInfo[]> {
 								continue;
 							}
 
-							if (typeof entry.sessionId === "string" && entry.sessionId !== sessionId) {
+							if (
+								typeof entry.sessionId === "string" &&
+								entry.sessionId !== sessionId
+							) {
 								continue;
 							}
 
@@ -303,7 +312,10 @@ export async function listSessions(cwd?: string): Promise<SessionInfo[]> {
 								sessionCwd = entry.cwd;
 							}
 
-							if (!conversationTitle && (entry.type === "user" || entry.type === "assistant")) {
+							if (
+								!conversationTitle &&
+								(entry.type === "user" || entry.type === "assistant")
+							) {
 								hasConversationEntry = true;
 								conversationTitle = extractTitleFromContent(entry.message?.content);
 							}
@@ -387,7 +399,9 @@ export async function replaySessionHistory(options: ReplayOptions): Promise<void
 	try {
 		for await (const line of reader) {
 			const trimmed = line.trim();
-			if (!trimmed) continue;
+			if (!trimmed) {
+				continue;
+			}
 
 			let entry: SessionHistoryEntry;
 			try {
@@ -405,20 +419,28 @@ export async function replaySessionHistory(options: ReplayOptions): Promise<void
 			}
 
 			const message = entry.message;
-			if (!message) continue;
+			if (!message) {
+				continue;
+			}
 
 			const role = message.role;
-			if (role !== "user" && role !== "assistant") continue;
+			if (role !== "user" && role !== "assistant") {
+				continue;
+			}
 
 			const content = message.content;
-			if (typeof content !== "string" && !Array.isArray(content)) continue;
+			if (typeof content !== "string" && !Array.isArray(content)) {
+				continue;
+			}
 
 			const textContent =
 				typeof content === "string"
 					? content
 					: content
 							.map((item) => {
-								if (typeof item === "string") return item;
+								if (typeof item === "string") {
+									return item;
+								}
 								if (
 									typeof item === "object" &&
 									item !== null &&

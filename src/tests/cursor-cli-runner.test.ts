@@ -10,7 +10,7 @@ describe("CursorCliRunner", () => {
 		const scriptPath = path.join(tempRoot, "fake-agent.js");
 
 		const script = `#!/usr/bin/env node\n
-afterResult();\n\nfunction afterResult() {\n  const event = { type: \"result\", subtype: \"success\", is_error: false };\n  process.stdout.write(JSON.stringify(event) + \"\\n\");\n  setTimeout(() => {}, 10000);\n}\n`;
+afterResult();\n\nfunction afterResult() {\n  const event = { type: "result", subtype: "success", is_error: false };\n  process.stdout.write(JSON.stringify(event) + "\\n");\n  setTimeout(() => {}, 10000);\n}\n`;
 
 		await writeFile(scriptPath, script, "utf8");
 		await chmod(scriptPath, 0o755);
@@ -73,7 +73,9 @@ setTimeout(() => {
 		expect(result.resultEvent?.type).toBe("result");
 		expect(elapsedMs).toBeGreaterThanOrEqual(650);
 		expect(
-			result.events.some((event) => event.type === "tool_call" && event.subtype === "completed"),
+			result.events.some(
+				(event) => event.type === "tool_call" && event.subtype === "completed",
+			),
 		).toBe(true);
 	}, 7000);
 });

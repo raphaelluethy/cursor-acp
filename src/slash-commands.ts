@@ -294,11 +294,9 @@ export function resolveSkillSlashCommandPrompt(
 }
 
 export function builtInSlashCommandNames(): string[] {
-	return [
-		...BUILTIN_SLASH_COMMANDS.map((command) =>
-			command.input?.hint ? `/${command.name} ${command.input.hint}` : `/${command.name}`,
-		),
-	];
+	return BUILTIN_SLASH_COMMANDS.map((command) =>
+		command.input?.hint ? `/${command.name} ${command.input.hint}` : `/${command.name}`,
+	);
 }
 
 export function parseModelListOutput(output: string): CursorModelDescriptor[] {
@@ -412,7 +410,8 @@ export async function handleSlashCommand(
 			const models = await context.listModels();
 
 			if (!target) {
-				const current = context.session.modelId ?? models.find((m) => m.current)?.modelId ?? "auto";
+				const current =
+					context.session.modelId ?? models.find((m) => m.current)?.modelId ?? "auto";
 				return {
 					handled: true,
 					responseText: `Current model: ${current}\nAvailable: ${models
