@@ -1,6 +1,6 @@
 # cursor-acp
 
-Cursor now published their own acp client (finally :D): https://cursor.com/docs/cli/acp#ide-integrations
+> **Why does this exist?** Cursor published their own ACP client ([docs](https://cursor.com/docs/cli/acp#ide-integrations)), but using it in Zed was rough as I somehow had to permit tool calls the whole time.
 
 Disclaimer: I am not affiliated with Cursor or Zed. This project is a personal experiment and should not be considered an official product of either company. I am a big fan of both products and wanted to combine what I like with both of them: An amazing editor and a great AI coding agent (and composer-1, holy this model flies xD).
 
@@ -8,7 +8,7 @@ An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-cl
 
 ## About
 
-This is an `ai-assisted` personal project aimed at bringing Cursor's agent into Zed. It now acts as a **wrapper around native `agent acp`**, while preserving compatibility features that the current native ACP server does not expose yet.
+This is an `ai-assisted` personal project aimed at bringing Cursor's agent into Zed. It acts as a **wrapper around native `agent acp`**, auto-approving tool calls when you opt in and preserving compatibility features that the current native ACP server does not expose yet.
 
 **Based on [claude-code-acp](https://github.com/zed-industries/claude-code-acp)** by Zed Industries - the original ACP adapter for Claude Code that served as the architectural foundation for this project.
 

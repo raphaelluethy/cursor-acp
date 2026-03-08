@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Source lives in `src/`. Key modules include the ACP agent (`src/cursor-acp-agent.ts`), Cursor CLI integration (`src/cursor-cli-runner.ts`), protocol mapping (`src/cursor-event-mapper.ts`), and prompt conversion (`src/prompt-conversion.ts`). Tests are in `src/tests/` and use the `.test.ts` naming pattern. Build output is emitted to `dist/` and should not be edited by hand. Documentation and notes live in `docs/`.
+Source lives in `src/`. Key modules include the outer ACP agent (`src/cursor-acp-agent.ts`), the native `agent acp` bridge (`src/cursor-native-acp-client.ts`), Cursor CLI helpers (`src/cursor-cli-runner.ts`), and prompt conversion (`src/prompt-conversion.ts`). The adapter wraps Cursor's native `agent acp` backend and adds session persistence, history replay, model selection, and auto-approval of tool calls. Tests are in `src/tests/` and use the `.test.ts` naming pattern. Build output is emitted to `dist/` and should not be edited by hand. Documentation and notes live in `docs/`.
 
 ## Build, Test, and Development Commands
 - `bun install`: install dependencies.
