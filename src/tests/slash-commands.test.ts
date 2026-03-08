@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+	availableSlashCommands,
 	handleSlashCommand,
 	loadCustomSlashCommands,
 	parseModelListOutput,
@@ -53,15 +54,15 @@ describe("slash commands", () => {
 
 	it("handles /mode set", async () => {
 		const session = { modelId: "auto", modeId: "default" as const };
-		const result = await handleSlashCommand("mode", "plan", {
+		const result = await handleSlashCommand("mode", "bypassPermissions", {
 			session,
 			auth: mockAuth,
 			listModels: async () => [],
 		});
 
 		expect(result.handled).toBe(true);
-		expect(result.responseText).toContain("Mode set to plan");
-		expect(session.modeId).toBe("plan");
+		expect(result.responseText).toContain("Mode set to autoRunAllCommands");
+		expect(session.modeId).toBe("autoRunAllCommands");
 	});
 
 	it("loads custom slash commands from workspace and home", async () => {
@@ -129,5 +130,17 @@ describe("slash commands", () => {
 		expect(prompt).toContain("Subject: improve tokenizer");
 		expect(prompt).toContain('Raw: feat(parser) "improve tokenizer"');
 		expect(prompt).toContain("Price: $20");
+	});
+
+	it("keeps wrapper built-ins when merging available commands", () => {
+		const commands = availableSlashCommands([
+			{ name: "mode", description: "native mode", input: null },
+			{ name: "commit", description: "commit helper", input: null },
+		]);
+
+		expect(commands.find((command) => command.name === "mode")?.description).toContain(
+			"active mode",
+		);
+		expect(commands.some((command) => command.name === "commit")).toBe(true);
 	});
 });

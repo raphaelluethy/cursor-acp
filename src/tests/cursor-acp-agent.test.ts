@@ -1,8 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+	CreateNativeSessionOptions,
+	NativeModeId,
+	NativeSessionBackend,
+	NativeSessionCallbacks,
+} from "../cursor-native-acp-client.js";
 import { CursorAcpAgent } from "../cursor-acp-agent.js";
+import { recordAssistantMessage, recordUserMessage } from "../session-storage.js";
 
 class FakeClient {
 	updates: any[] = [];
@@ -14,7 +21,13 @@ class FakeClient {
 
 	async requestPermission(params: any): Promise<any> {
 		this.permissionCalls.push(params);
-		return { outcome: { outcome: "selected", optionId: "allow_once" } };
+		const allowOption = params.options.find((option: any) => option.kind.startsWith("allow"));
+		return {
+			outcome: {
+				outcome: "selected",
+				optionId: allowOption?.optionId ?? params.options[0]?.optionId ?? "allow-once",
+			},
+		};
 	}
 
 	async readTextFile(_params: any): Promise<any> {
@@ -26,42 +39,93 @@ class FakeClient {
 	}
 }
 
-describe("CursorAcpAgent", () => {
-	it("handles slash command in prompt", async () => {
-		const client = new FakeClient();
-		let promptCalls = 0;
+class FakeNativeBackend implements NativeSessionBackend {
+	alive = true;
+	closeCalls = 0;
+	createCalls = 0;
+	modeCalls: NativeModeId[] = [];
+	nativeSessionId: string | undefined;
+	promptCalls: string[] = [];
+	promptHandler?: (promptText: string) => Promise<any>;
 
-		const runner: any = {
-			async listModels() {
-				return [{ modelId: "auto", name: "Auto", current: true }];
+	constructor(
+		readonly options: CreateNativeSessionOptions,
+		readonly callbacks: NativeSessionCallbacks,
+		private readonly index: number,
+	) {
+		this.nativeSessionId = `native-${index}`;
+	}
+
+	async cancel(): Promise<void> {}
+
+	async close(): Promise<void> {
+		this.alive = false;
+		this.closeCalls += 1;
+	}
+
+	async createSessionBackend(): Promise<any> {
+		this.createCalls += 1;
+		await this.callbacks.onSessionUpdate({
+			sessionId: this.nativeSessionId!,
+			update: {
+				sessionUpdate: "available_commands_update",
+				availableCommands: [
+					{ name: "commit", description: "Commit helper", input: null },
+					{ name: "mode", description: "Native mode", input: null },
+				],
 			},
-			async createChat() {
-				return "chat-1";
-			},
-			startPrompt() {
-				promptCalls += 1;
-				return {
-					cancel() {},
-					completed: Promise.resolve({
-						events: [],
-						resultEvent: {
-							type: "result",
-							subtype: "success",
-							is_error: false,
-						},
-						stderr: "",
-						exitCode: 0,
-					}),
-				};
+		} as any);
+
+		return {
+			sessionId: this.nativeSessionId!,
+			modes: {
+				currentModeId: "agent",
+				availableModes: [
+					{ id: "agent", name: "Agent", description: "Agent mode" },
+					{ id: "plan", name: "Plan", description: "Plan mode" },
+					{ id: "ask", name: "Ask", description: "Ask mode" },
+				],
 			},
 		};
+	}
 
-		const auth: any = {
+	async prompt(promptText: string): Promise<any> {
+		this.promptCalls.push(promptText);
+		if (this.promptHandler) {
+			return await this.promptHandler(promptText);
+		}
+
+		return { stopReason: "end_turn" };
+	}
+
+	async restartBackend(): Promise<any> {
+		return await this.createSessionBackend();
+	}
+
+	async setNativeMode(modeId: NativeModeId): Promise<any> {
+		this.modeCalls.push(modeId);
+		await this.callbacks.onSessionUpdate({
+			sessionId: this.nativeSessionId!,
+			update: {
+				sessionUpdate: "current_mode_update",
+				currentModeId: modeId,
+			},
+		} as any);
+		return {};
+	}
+}
+
+function createAgentTestHarness() {
+	const backends: FakeNativeBackend[] = [];
+	const client = new FakeClient();
+
+	const agent = new CursorAcpAgent(client as any, {
+		auth: {
 			async status() {
-				return { loggedIn: true, account: "u@e", raw: "" };
+				return { loggedIn: true as const, account: "u@e", raw: "" };
 			},
 			async ensureLoggedIn() {
-				return { loggedIn: true, account: "u@e", raw: "" };
+				return { loggedIn: true as const, account: "u@e", raw: "" };
 			},
 			async login() {
 				return { code: 0, stdout: "", stderr: "" };
@@ -69,9 +133,73 @@ describe("CursorAcpAgent", () => {
 			async logout() {
 				return { code: 0, stdout: "", stderr: "" };
 			},
-		};
+		},
+		runner: {
+			async listModels() {
+				return [
+					{ modelId: "auto", name: "Auto", current: true },
+					{ modelId: "gpt-5.2", name: "GPT-5.2" },
+				];
+			},
+		} as any,
+		createNativeClient(options, callbacks) {
+			const backend = new FakeNativeBackend(options, callbacks, backends.length + 1);
+			backends.push(backend);
+			return backend;
+		},
+	});
 
-		const agent = new CursorAcpAgent(client as any, { runner, auth });
+	return { agent, backends, client };
+}
+
+function createLoggedOutAgentTestHarness() {
+	const backends: FakeNativeBackend[] = [];
+	const client = new FakeClient();
+
+	const agent = new CursorAcpAgent(client as any, {
+		auth: {
+			async status() {
+				return { loggedIn: false as const, raw: "" };
+			},
+			async ensureLoggedIn() {
+				return { loggedIn: false as const, raw: "" };
+			},
+			async login() {
+				return { code: 0, stdout: "", stderr: "" };
+			},
+			async logout() {
+				return { code: 0, stdout: "", stderr: "" };
+			},
+		},
+		runner: {
+			async listModels() {
+				return [{ modelId: "auto", name: "Auto", current: true }];
+			},
+		} as any,
+		createNativeClient(options, callbacks) {
+			const backend = new FakeNativeBackend(options, callbacks, backends.length + 1);
+			backends.push(backend);
+			return backend;
+		},
+	});
+
+	return { agent, backends, client };
+}
+
+async function startNativeBackend(agent: CursorAcpAgent, sessionId: string): Promise<void> {
+	const session = (agent as any).sessions[sessionId];
+	await (agent as any).ensureBackend(session);
+}
+
+afterEach(() => {
+	delete process.env.CURSOR_ACP_DEFAULT_MODE;
+	delete process.env.CURSOR_ACP_DEFAULT_MODEL;
+});
+
+describe("CursorAcpAgent", () => {
+	it("handles adapter slash commands without invoking native prompt", async () => {
+		const { agent, backends, client } = createAgentTestHarness();
+
 		await agent.initialize({
 			protocolVersion: 1,
 			clientCapabilities: {},
@@ -87,74 +215,83 @@ describe("CursorAcpAgent", () => {
 		} as any);
 
 		expect(response.stopReason).toBe("end_turn");
-		expect(promptCalls).toBe(0);
+		expect(backends).toHaveLength(0);
 		expect(client.updates.some((u) => u.update?.sessionUpdate === "agent_message_chunk")).toBe(
 			true,
 		);
 	});
 
-	it("retries with force after permission on rejected tool", async () => {
-		const client = new FakeClient();
-		let runCount = 0;
+	it("merges native available commands with wrapper built-ins", async () => {
+		const { agent, client } = createAgentTestHarness();
 
-		const runner: any = {
-			async listModels() {
-				return [{ modelId: "auto", name: "Auto", current: true }];
-			},
-			async createChat() {
-				return "chat-1";
-			},
-			startPrompt(_opts: any) {
-				runCount += 1;
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+		await startNativeBackend(agent, session.sessionId);
+		await new Promise((resolve) => setTimeout(resolve, 0));
 
-				if (runCount === 1) {
-					return {
-						cancel() {},
-						completed: Promise.resolve({
-							events: [],
-							resultEvent: {
-								type: "result",
-								subtype: "success",
-								is_error: false,
-							},
-							stderr: "",
-							exitCode: 0,
-						}),
-					};
-				}
+		const commandsUpdate = client.updates.find(
+			(update) => update.update?.sessionUpdate === "available_commands_update",
+		);
+		const names = commandsUpdate?.update?.availableCommands?.map(
+			(command: any) => command.name,
+		);
+		expect(names).toContain("help");
+		expect(names).toContain("mode");
+		expect(names).toContain("commit");
+		expect(names.filter((name: string) => name === "mode")).toHaveLength(1);
+	});
 
-				return {
-					cancel() {},
-					completed: Promise.resolve({
-						events: [],
-						resultEvent: {
-							type: "result",
-							subtype: "success",
-							is_error: false,
-						},
-						stderr: "",
-						exitCode: 0,
-					}),
-				};
-			},
-		};
+	it("creates sessions before auth and defers native backend startup until first prompt", async () => {
+		const { agent, backends } = createLoggedOutAgentTestHarness();
 
-		const auth: any = {
-			async status() {
-				return { loggedIn: true, account: "u@e", raw: "" };
-			},
-			async ensureLoggedIn() {
-				return { loggedIn: true, account: "u@e", raw: "" };
-			},
-			async login() {
-				return { code: 0, stdout: "", stderr: "" };
-			},
-			async logout() {
-				return { code: 0, stdout: "", stderr: "" };
-			},
-		};
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
 
-		const agent = new CursorAcpAgent(client as any, { runner, auth });
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+
+		expect(session.models?.currentModelId).toBe("auto");
+		expect(backends).toHaveLength(0);
+
+		await expect(
+			agent.prompt({
+				sessionId: session.sessionId,
+				prompt: [{ type: "text", text: "hello" }],
+			} as any),
+		).rejects.toThrow("Authentication required");
+
+		expect(backends).toHaveLength(0);
+	});
+
+	it("uses default mode by default", async () => {
+		const { agent } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+
+		expect(session.modes?.currentModeId).toBe("default");
+	});
+
+	it("does not start the native backend when changing mode before first prompt", async () => {
+		const { agent, backends } = createAgentTestHarness();
+
 		await agent.initialize({
 			protocolVersion: 1,
 			clientCapabilities: {},
@@ -164,24 +301,87 @@ describe("CursorAcpAgent", () => {
 			mcpServers: [],
 		} as any);
 
-		// inject a fake rejected call by monkey-patching private method path through any
-		const original = (agent as any).runPromptAttempt.bind(agent);
-		let calls = 0;
-		(agent as any).runPromptAttempt = async (...args: any[]) => {
-			calls += 1;
-			if (calls === 1) {
-				return {
-					stopReason: "end_turn",
-					rejectedToolCalls: [
-						{
-							toolCallId: "t1",
-							title: "`pwd`",
-							rawInput: { command: "pwd" },
-						},
-					],
-				};
-			}
-			return await original(...args);
+		await agent.setSessionMode({
+			sessionId: session.sessionId,
+			modeId: "plan",
+		} as any);
+
+		expect(backends).toHaveLength(0);
+	});
+
+	it("reports terminal auth metadata using the configured native command", async () => {
+		const agent = new CursorAcpAgent({} as any, {
+			nativeCommand: "cursor-agent",
+		});
+
+		const response = await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "terminal-auth": true } },
+		} as any);
+
+		expect(response.authMethods?.[0]?._meta?.["terminal-auth"]).toMatchObject({
+			command: "cursor-agent",
+			args: ["login"],
+		});
+	});
+
+	it("does not restart the backend when /model runs before first prompt", async () => {
+		const { agent, backends } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+
+		const recordSpy = vi.spyOn(agent as any, "restartBackend");
+
+		const response = await agent.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "/model gpt-5.2" }],
+		} as any);
+
+		expect(response.stopReason).toBe("end_turn");
+		expect(backends).toHaveLength(0);
+		expect(recordSpy).not.toHaveBeenCalled();
+
+		recordSpy.mockRestore();
+	});
+
+	it("forwards permission requests in default mode", async () => {
+		process.env.CURSOR_ACP_DEFAULT_MODE = "default";
+		const { agent, backends, client } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+		await startNativeBackend(agent, session.sessionId);
+
+		backends[0]!.promptHandler = async () => {
+			await backends[0]!.callbacks.onRequestPermission({
+				sessionId: backends[0]!.nativeSessionId!,
+				options: [
+					{
+						optionId: "allow-once",
+						kind: "allow_once",
+						name: "Allow once",
+					},
+				],
+				toolCall: {
+					toolCallId: "t1",
+					title: "`pwd`",
+					rawInput: { command: "pwd" },
+				},
+			} as any);
+			return { stopReason: "end_turn" };
 		};
 
 		await agent.prompt({
@@ -189,53 +389,12 @@ describe("CursorAcpAgent", () => {
 			prompt: [{ type: "text", text: "run pwd" }],
 		} as any);
 
-		expect(client.permissionCalls.length).toBe(1);
-		expect(calls).toBe(2);
+		expect(client.permissionCalls).toHaveLength(1);
 	});
 
-	it("does not request permission after cancellation", async () => {
-		const client = new FakeClient();
+	it("auto-approves permission requests in autoRunAllCommands mode", async () => {
+		const { agent, backends, client } = createAgentTestHarness();
 
-		const runner: any = {
-			async listModels() {
-				return [{ modelId: "auto", name: "Auto", current: true }];
-			},
-			async createChat() {
-				return "chat-1";
-			},
-			startPrompt() {
-				return {
-					cancel() {},
-					completed: Promise.resolve({
-						events: [],
-						resultEvent: {
-							type: "result",
-							subtype: "success",
-							is_error: false,
-						},
-						stderr: "",
-						exitCode: 0,
-					}),
-				};
-			},
-		};
-
-		const auth: any = {
-			async status() {
-				return { loggedIn: true, account: "u@e", raw: "" };
-			},
-			async ensureLoggedIn() {
-				return { loggedIn: true, account: "u@e", raw: "" };
-			},
-			async login() {
-				return { code: 0, stdout: "", stderr: "" };
-			},
-			async logout() {
-				return { code: 0, stdout: "", stderr: "" };
-			},
-		};
-
-		const agent = new CursorAcpAgent(client as any, { runner, auth });
 		await agent.initialize({
 			protocolVersion: 1,
 			clientCapabilities: {},
@@ -244,63 +403,49 @@ describe("CursorAcpAgent", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		} as any);
+		await startNativeBackend(agent, session.sessionId);
+		await agent.setSessionMode({
+			sessionId: session.sessionId,
+			modeId: "autoRunAllCommands",
+		} as any);
 
-		(agent as any).runPromptAttempt = async () => ({
-			stopReason: "cancelled",
-			rejectedToolCalls: [
-				{
+		backends[0]!.promptHandler = async () => {
+			const response = await backends[0]!.callbacks.onRequestPermission({
+				sessionId: backends[0]!.nativeSessionId!,
+				options: [
+					{
+						optionId: "allow-always",
+						kind: "allow_always",
+						name: "Always allow",
+					},
+				],
+				toolCall: {
 					toolCallId: "t1",
 					title: "`pwd`",
 					rawInput: { command: "pwd" },
 				},
-			],
-		});
+			} as any);
+			expect(response.outcome.outcome).toBe("selected");
+			expect(response).toMatchObject({
+				outcome: {
+					outcome: "selected",
+					optionId: "allow-always",
+				},
+			});
+			return { stopReason: "end_turn" };
+		};
 
-		const response = await agent.prompt({
+		await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "run pwd" }],
 		} as any);
 
-		expect(response.stopReason).toBe("cancelled");
-		expect(client.permissionCalls.length).toBe(0);
+		expect(client.permissionCalls).toHaveLength(0);
 	});
 
-	it("returns cancelled when slash command is cancelled", async () => {
-		const client = new FakeClient();
+	it("maps wrapper plan mode to native plan mode and emits updates", async () => {
+		const { agent, backends, client } = createAgentTestHarness();
 
-		const runner: any = {
-			async listModels() {
-				return [{ modelId: "auto", name: "Auto", current: true }];
-			},
-			async createChat() {
-				return "chat-1";
-			},
-			startPrompt() {
-				throw new Error("startPrompt should not be called for /status");
-			},
-		};
-
-		let authCalls = 0;
-		const auth: any = {
-			async status() {
-				authCalls += 1;
-				if (authCalls === 2) {
-					await new Promise((resolve) => setTimeout(resolve, 50));
-				}
-				return { loggedIn: true, account: "u@e", raw: "" };
-			},
-			async ensureLoggedIn() {
-				return { loggedIn: true, account: "u@e", raw: "" };
-			},
-			async login() {
-				return { code: 0, stdout: "", stderr: "" };
-			},
-			async logout() {
-				return { code: 0, stdout: "", stderr: "" };
-			},
-		};
-
-		const agent = new CursorAcpAgent(client as any, { runner, auth });
 		await agent.initialize({
 			protocolVersion: 1,
 			clientCapabilities: {},
@@ -309,110 +454,113 @@ describe("CursorAcpAgent", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		} as any);
+		await startNativeBackend(agent, session.sessionId);
+
+		await agent.setSessionMode({
+			sessionId: session.sessionId,
+			modeId: "plan",
+		} as any);
+
+		expect(backends[0]!.modeCalls).toContain("plan");
+		expect(
+			client.updates.some(
+				(update) =>
+					update.update?.sessionUpdate === "current_mode_update" &&
+					update.update?.currentModeId === "plan",
+			),
+		).toBe(true);
+	});
+
+	it("restarts the native backend when the model changes while idle", async () => {
+		const { agent, backends } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+		await startNativeBackend(agent, session.sessionId);
+
+		await agent.unstable_setSessionModel({
+			sessionId: session.sessionId,
+			modelId: "gpt-5.2",
+		} as any);
+
+		expect(backends).toHaveLength(2);
+		expect(backends[0]!.closeCalls).toBe(1);
+		expect(backends[1]!.options.modelId).toBe("gpt-5.2");
+	});
+
+	it("rejects model changes while a prompt is active", async () => {
+		const { agent, backends } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+		await startNativeBackend(agent, session.sessionId);
+
+		let resolvePrompt: (() => void) | undefined;
+		backends[0]!.promptHandler = async () =>
+			await new Promise((resolve) => {
+				resolvePrompt = () => resolve({ stopReason: "end_turn" });
+			});
 
 		const promptPromise = agent.prompt({
 			sessionId: session.sessionId,
-			prompt: [{ type: "text", text: "/status" }],
+			prompt: [{ type: "text", text: "run something" }],
 		} as any);
+		while (backends[0]!.promptCalls.length === 0) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
 
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		await agent.cancel({ sessionId: session.sessionId } as any);
+		await expect(
+			agent.unstable_setSessionModel({
+				sessionId: session.sessionId,
+				modelId: "gpt-5.2",
+			} as any),
+		).rejects.toThrow("Invalid params");
 
-		const response = await promptPromise;
-		expect(response.stopReason).toBe("cancelled");
+		resolvePrompt?.();
+		await promptPromise;
 	});
 
-	it("forwards custom slash command prompts to cursor cli", async () => {
+	it("replays stored history when resuming and creates a fresh native backend", async () => {
 		const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-"));
-		const commandsDir = path.join(tempRoot, ".cursor", "commands");
-		await mkdir(commandsDir, { recursive: true });
-		await writeFile(
-			path.join(commandsDir, "commit.md"),
-			[
-				"---",
-				"description: Commit helper",
-				"argument-hint: <scope>",
-				"---",
-				"Write a concise conventional commit message.",
-				"Scope: $ARGUMENTS",
-			].join("\n"),
-			"utf8",
-		);
-
-		const client = new FakeClient();
-		let promptText = "";
-
-		const runner: any = {
-			async listModels() {
-				return [{ modelId: "auto", name: "Auto", current: true }];
-			},
-			async createChat() {
-				return "chat-1";
-			},
-			startPrompt(options: any) {
-				promptText = options.prompt;
-				return {
-					cancel() {},
-					completed: Promise.resolve({
-						events: [],
-						resultEvent: {
-							type: "result",
-							subtype: "success",
-							is_error: false,
-						},
-						stderr: "",
-						exitCode: 0,
-					}),
-				};
-			},
-		};
-
-		const auth: any = {
-			async status() {
-				return { loggedIn: true, account: "u@e", raw: "" };
-			},
-			async ensureLoggedIn() {
-				return { loggedIn: true, account: "u@e", raw: "" };
-			},
-			async login() {
-				return { code: 0, stdout: "", stderr: "" };
-			},
-			async logout() {
-				return { code: 0, stdout: "", stderr: "" };
-			},
-		};
+		process.env.CURSOR_ACP_CONFIG_DIR = tempRoot;
 
 		try {
-			const agent = new CursorAcpAgent(client as any, { runner, auth });
+			const { agent, backends, client } = createAgentTestHarness();
+
+			await recordUserMessage("/tmp/project", "session-1", "hello");
+			await recordAssistantMessage("/tmp/project", "session-1", "world");
+
 			await agent.initialize({
 				protocolVersion: 1,
 				clientCapabilities: {},
 			} as any);
-			const session = await agent.newSession({
-				cwd: tempRoot,
+			await agent.unstable_resumeSession({
+				sessionId: "session-1",
+				cwd: "/tmp/project",
 				mcpServers: [],
 			} as any);
-			await new Promise((resolve) => setTimeout(resolve, 0));
 
-			const commandsUpdate = client.updates.find(
-				(u) => u.update?.sessionUpdate === "available_commands_update",
-			);
+			expect(backends).toHaveLength(0);
 			expect(
-				commandsUpdate?.update?.availableCommands?.some(
-					(command: any) => command.name === "commit",
-				),
-			).toBe(true);
-
-			const response = await agent.prompt({
-				sessionId: session.sessionId,
-				prompt: [{ type: "text", text: "/commit feat(parser)" }],
-			} as any);
-
-			expect(response.stopReason).toBe("end_turn");
-			expect(promptText).toBe(
-				"Write a concise conventional commit message.\nScope: feat(parser)",
-			);
+				client.updates.filter((u) => u.update?.sessionUpdate === "user_message_chunk"),
+			).toHaveLength(1);
+			expect(
+				client.updates.filter((u) => u.update?.sessionUpdate === "agent_message_chunk"),
+			).toHaveLength(1);
 		} finally {
+			delete process.env.CURSOR_ACP_CONFIG_DIR;
 			await rm(tempRoot, { recursive: true, force: true });
 		}
 	});

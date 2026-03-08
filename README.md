@@ -4,25 +4,38 @@ Cursor now published their own acp client (finally :D): https://cursor.com/docs/
 
 Disclaimer: I am not affiliated with Cursor or Zed. This project is a personal experiment and should not be considered an official product of either company. I am a big fan of both products and wanted to combine what I like with both of them: An amazing editor and a great AI coding agent (and composer-1, holy this model flies xD).
 
-An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) adapter for [Cursor](https://cursor.com) Agent CLI, enabling Cursor's powerful AI coding assistant to be used within the [Zed](https://zed.dev) editor.
+An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) adapter for [Cursor](https://cursor.com) Agent CLI, enabling Cursor's AI coding assistant to be used within [Zed](https://zed.dev) and other ACP-compatible clients.
 
 ## About
 
-This is an `ai-assisted` personal project aimed at bringing a great AI coding agent into the Zed editor. It wraps the Cursor Agent CLI and exposes it via the ACP protocol, allowing Zed (and other ACP-compatible clients) to leverage Cursor's capabilities.
+This is an `ai-assisted` personal project aimed at bringing Cursor's agent into Zed. It now acts as a **wrapper around native `agent acp`**, while preserving compatibility features that the current native ACP server does not expose yet.
 
 **Based on [claude-code-acp](https://github.com/zed-industries/claude-code-acp)** by Zed Industries - the original ACP adapter for Claude Code that served as the architectural foundation for this project.
 
 ## Features
 
-- **ACP Session Lifecycle**: Supports `new`, `resume`, and `fork` (best-effort) session operations
-- **Session Persistence & History**: Conversation history is persisted to disk; when resuming a session, the full history is replayed so the client sees previous messages (⚠️ This feature is WIP on Zed's side, so this can break at any time, I will try to keep it up to date)
-- **Session Listing**: List past sessions (with optional cwd filter and pagination) for quick resume
-- **Model & Mode Switching**: Dynamically change the underlying model and operation mode
-- **Authentication**: Login/logout/status management via Cursor CLI
-- **File Mentions**: Converts `@` file/resource mentions to the appropriate format
-- **Tool Call Streaming**: Real-time ACP tool updates during execution
-- **Plan Updates**: TODO updates mapped to ACP plans
-- **Slash Commands**: Built-in adapter commands plus workspace/global custom slash commands
+### Native-backed
+
+- **Native ACP backend**: Uses `agent acp` instead of the older `agent --print --output-format stream-json` wrapper path
+- **Tool and message streaming**: Forwards native ACP `session/update` notifications to the client
+- **Cursor commands and skills**: Relies on native ACP `available_commands_update` for Cursor/user commands and skills
+- **Mode switching**: Maps wrapper modes to native `agent`, `ask`, and `plan`
+
+### Wrapper compatibility
+
+- **ACP session lifecycle**: Supports `new`, `resume`, and `fork` (best-effort) session operations
+- **Session persistence & history replay**: Stores visible history locally and replays it on resume/load
+- **Session listing**: Lists past local sessions with optional cwd filtering and pagination
+- **Model listing and best-effort model selection**: Keeps `/model` support while native ACP has no stable model API
+- **Authentication helpers**: `/login`, `/logout`, `/status`, plus terminal-auth metadata for ACP clients that support it
+- **Prompt flattening for ACP clients**: Keeps embedded context and image prompts working by converting them to text before forwarding to native ACP
+- **Optional Auto Run All Commands mode**: Auto-approves native ACP permission requests when explicitly selected
+
+### Known limitations
+
+- Native Cursor ACP on the currently validated CLI does **not** expose `session/list`, `session/resume`, or `session/set_model`
+- Resuming after restarting `cursor-acp` replays visible history, but may not preserve native Cursor backend state
+- `debug` mode is intentionally not exposed in this phase
 
 ## Slash Commands
 
@@ -35,21 +48,7 @@ This is an `ai-assisted` personal project aimed at bringing a great AI coding ag
 | `/login`  | Authenticate with Cursor               |
 | `/logout` | Sign out of Cursor                     |
 
-Custom slash commands are loaded from:
-
-- `<workspace>/.cursor/commands/*.md`
-- `~/.cursor/commands/*.md`
-
-If both locations define the same command name, the workspace command wins.
-
-## Skills
-
-Custom skills are loaded from:
-
-- `<workspace>/.cursor/skills/**/skill.md`
-- `~/.agents/skills/**/skill.md`
-
-If multiple locations define the same skill name, the workspace skill wins.
+Other Cursor commands and skills are forwarded from native `agent acp` via `available_commands_update`.
 
 ## Installation
 
@@ -136,7 +135,8 @@ If `cursor-acp` is not on your PATH, use the full absolute path to the entry poi
 
 You can optionally set default mode and model via environment variables in the `"env"` object:
 
-- `CURSOR_ACP_DEFAULT_MODE` — one of `default`, `acceptEdits`, `plan`, `ask`, `bypassPermissions`
+- `CURSOR_ACP_DEFAULT_MODE` — one of `default`, `autoRunAllCommands`, `plan`, or `ask`
+- Legacy aliases are still accepted: `acceptEdits` -> `default`, `bypassPermissions` -> `autoRunAllCommands`
 - `CURSOR_ACP_DEFAULT_MODEL` — a model ID string (e.g. the model ID shown by `/model`)
 
 Example with defaults configured:
@@ -149,7 +149,24 @@ Example with defaults configured:
       "command": "cursor-acp",
       "args": [],
       "env": {
-        "CURSOR_ACP_DEFAULT_MODE": "bypassPermissions"
+        "CURSOR_ACP_DEFAULT_MODE": "autoRunAllCommands"
+      }
+    }
+  }
+}
+```
+
+Recommended Zed setup if you want tools to run without repeated approval prompts:
+
+```json
+{
+  "agent_servers": {
+    "Cursor": {
+      "type": "custom",
+      "command": "cursor-acp",
+      "args": [],
+      "env": {
+        "CURSOR_ACP_DEFAULT_MODE": "autoRunAllCommands"
       }
     }
   }
@@ -161,6 +178,7 @@ Example with defaults configured:
 1. Open the Agent Panel with `Cmd+?` (macOS) or `Ctrl+?` (Linux)
 2. Click the `+` button in the top right and select **Cursor**
 3. On first use, run the `/login` slash command to authenticate with Cursor
+4. The default mode is `default`; if you want tool execution without repeated prompts, set `CURSOR_ACP_DEFAULT_MODE=autoRunAllCommands`
 
 You can also bind a keyboard shortcut to quickly open a new Cursor thread by adding the following to your `keymap.json` (open via `zed: open keymap file`):
 
@@ -200,16 +218,23 @@ bun run format      # Format code with oxfmt
 bun run check       # Run lint and format checks
 ```
 
+## Migration Notes
+
+- `default`, `autoRunAllCommands`, `ask`, and `plan` are the advertised modes
+- `acceptEdits` and `bypassPermissions` are deprecated aliases
+- `debug` is not exposed
+- Custom commands and skills are forwarded from native `agent acp`
+
 ## Project Structure
 
 ```
 src/
 ├── index.ts              # CLI entry point
 ├── lib.ts                # Library exports
-├── cursor-acp-agent.ts   # Main ACP agent implementation
-├── cursor-cli-runner.ts  # Cursor CLI process management
-├── cursor-event-mapper.ts# Maps Cursor events to ACP events
-├── prompt-conversion.ts  # Converts ACP prompts to Cursor format
+├── cursor-acp-agent.ts   # Outer ACP agent + compatibility layer
+├── cursor-native-acp-client.ts # Native `agent acp` bridge
+├── cursor-cli-runner.ts  # Cursor CLI helpers (model listing)
+├── prompt-conversion.ts  # Flattens ACP prompts for native ACP forwarding
 ├── auth.ts               # Authentication handling
 ├── settings.ts           # Configuration management
 ├── session-storage.ts    # Session persistence and history replay
@@ -221,7 +246,7 @@ src/
 
 ## Configuration
 
-The adapter uses Cursor CLI with `--print --output-format stream-json` flags for streaming JSON output that gets mapped to ACP events.
+The adapter now uses `agent acp` as its execution backend and keeps local compatibility logic for resume/list/model behavior that native ACP does not currently expose.
 
 ### Session Storage
 

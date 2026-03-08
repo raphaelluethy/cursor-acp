@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CursorAuthClient } from "./auth.js";
-import { SessionModeId, SUPPORTED_MODE_IDS } from "./settings.js";
+import { ADVERTISED_MODE_IDS, normalizeModeId, SessionModeId } from "./settings.js";
 import { CustomSkill, resolveSkillPrompt } from "./skills.js";
 
 export interface CursorModelDescriptor {
@@ -29,9 +29,9 @@ export interface SlashCommandContext {
 	session: SlashSessionState;
 	auth: CursorAuthClient;
 	listModels: () => Promise<CursorModelDescriptor[]>;
-	customCommands?: CustomSlashCommand[];
-	skills?: CustomSkill[];
+	availableCommands?: AvailableCommand[];
 	onModeChanged?: (modeId: SessionModeId) => Promise<void>;
+	onModelChanged?: (modelId: string) => Promise<void>;
 }
 
 export interface SlashCommandResult {
@@ -56,45 +56,21 @@ const BUILTIN_SLASH_COMMANDS: AvailableCommand[] = [
 	{ name: "status", description: "Show login status", input: null },
 ];
 
-export function availableSlashCommands(
-	customCommands: CustomSlashCommand[] = [],
-	skills: CustomSkill[] = [],
-): AvailableCommand[] {
+export function availableSlashCommands(extraCommands: AvailableCommand[] = []): AvailableCommand[] {
 	const deduped = new Map<string, AvailableCommand>();
 	for (const command of BUILTIN_SLASH_COMMANDS) {
 		deduped.set(command.name.toLowerCase(), command);
 	}
 
-	for (const command of customCommands) {
+	for (const command of extraCommands) {
 		const key = command.name.toLowerCase();
 		if (deduped.has(key)) {
 			continue;
 		}
-		deduped.set(key, {
-			name: command.name,
-			description: command.description,
-			input: command.argumentHint ? { hint: command.argumentHint } : null,
-		});
-	}
-
-	for (const skill of skills) {
-		const name = skillCommandName(skill.name);
-		const key = name.toLowerCase();
-		if (deduped.has(key)) {
-			continue;
-		}
-		deduped.set(key, {
-			name,
-			description: skill.description,
-			input: null,
-		});
+		deduped.set(key, command);
 	}
 
 	return [...deduped.values()];
-}
-
-function skillCommandName(skillName: string): string {
-	return `skill:${skillName}`;
 }
 
 async function collectMarkdownFiles(dir: string): Promise<string[]> {
@@ -327,13 +303,6 @@ export function parseModelListOutput(output: string): CursorModelDescriptor[] {
 	return models;
 }
 
-function normalizeModeId(value: string): SessionModeId | null {
-	if (SUPPORTED_MODE_IDS.includes(value as SessionModeId)) {
-		return value as SessionModeId;
-	}
-	return null;
-}
-
 export async function handleSlashCommand(
 	command: string,
 	args: string,
@@ -347,18 +316,21 @@ export async function handleSlashCommand(
 				handled: true,
 				responseText: [
 					`Supported commands: ${builtInSlashCommandNames().join(", ")}`,
-					context.customCommands?.length
-						? `Custom commands: ${context.customCommands
+					context.availableCommands?.length
+						? `Other commands: ${context.availableCommands
+								.filter(
+									(command) =>
+										!BUILTIN_SLASH_COMMANDS.some(
+											(builtin) =>
+												builtin.name.toLowerCase() ===
+												command.name.toLowerCase(),
+										),
+								)
 								.map((command) =>
-									command.argumentHint
-										? `/${command.name} ${command.argumentHint}`
+									command.input?.hint
+										? `/${command.name} ${command.input.hint}`
 										: `/${command.name}`,
 								)
-								.join(", ")}`
-						: null,
-					context.skills?.length
-						? `Skills: ${context.skills
-								.map((skill) => `/${skillCommandName(skill.name)}`)
 								.join(", ")}`
 						: null,
 				]
@@ -431,6 +403,9 @@ export async function handleSlashCommand(
 			}
 
 			context.session.modelId = match.modelId;
+			if (context.onModelChanged) {
+				await context.onModelChanged(match.modelId);
+			}
 			return { handled: true, responseText: `Model set to ${match.modelId}` };
 		}
 
@@ -439,7 +414,7 @@ export async function handleSlashCommand(
 			if (!target) {
 				return {
 					handled: true,
-					responseText: `Current mode: ${context.session.modeId}\nAvailable: ${SUPPORTED_MODE_IDS.join(", ")}`,
+					responseText: `Current mode: ${context.session.modeId}\nAvailable: ${ADVERTISED_MODE_IDS.join(", ")}`,
 				};
 			}
 
@@ -447,7 +422,7 @@ export async function handleSlashCommand(
 			if (!nextMode) {
 				return {
 					handled: true,
-					responseText: `Unknown mode: ${target}. Available: ${SUPPORTED_MODE_IDS.join(", ")}`,
+					responseText: `Unknown mode: ${target}. Available: ${ADVERTISED_MODE_IDS.join(", ")}`,
 				};
 			}
 

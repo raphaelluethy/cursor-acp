@@ -2,6 +2,7 @@ import {
 	Agent,
 	AgentSideConnection,
 	AuthenticateRequest,
+	AvailableCommand,
 	CancelNotification,
 	ClientCapabilities,
 	ForkSessionRequest,
@@ -17,9 +18,10 @@ import {
 	ReadTextFileRequest,
 	ReadTextFileResponse,
 	RequestError,
+	RequestPermissionRequest,
+	RequestPermissionResponse,
 	ResumeSessionRequest,
 	ResumeSessionResponse,
-	SessionModelState,
 	SetSessionModelRequest,
 	SetSessionModelResponse,
 	SetSessionModeRequest,
@@ -30,61 +32,68 @@ import {
 } from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
-import { CursorCliRunner } from "./cursor-cli-runner.js";
 import { CursorAuth, CursorAuthClient } from "./auth.js";
-import { CachedToolUse, mapCursorEventToAcp, RejectedToolCall } from "./cursor-event-mapper.js";
+import {
+	CreateNativeSessionOptions,
+	CursorNativeAcpClient,
+	NativeModeId,
+	NativeSessionBackend,
+	NativeSessionCallbacks,
+} from "./cursor-native-acp-client.js";
+import { CursorCliRunner } from "./cursor-cli-runner.js";
+import { parseLeadingSlashCommand, promptToCursorText } from "./prompt-conversion.js";
 import {
 	availableSlashCommands,
-	CustomSlashCommand,
+	CursorModelDescriptor,
 	handleSlashCommand,
-	loadCustomSlashCommands,
-	resolveCustomSlashCommandPrompt,
-	resolveSkillSlashCommandPrompt,
 } from "./slash-commands.js";
-import { CustomSkill, loadCustomSkills } from "./skills.js";
-import { parseLeadingSlashCommand, promptToCursorText } from "./prompt-conversion.js";
 import {
 	availableModes,
 	DEFAULT_MODE_ID,
+	normalizeModeId,
 	parseDefaultMode,
 	parseDefaultModel,
 	SessionModeId,
-	SUPPORTED_MODE_IDS,
 } from "./settings.js";
 import {
 	findSessionFile,
 	listSessions,
-	readSessionMeta,
 	recordAssistantMessage,
 	recordSessionMeta,
 	recordUserMessage,
 	replaySessionHistory,
 } from "./session-storage.js";
-import { Logger, unreachable } from "./utils.js";
+import { Logger } from "./utils.js";
+
+interface ActivePromptState {
+	assistantTextChunks: string[];
+}
 
 interface SessionState {
 	sessionId: string;
 	cwd: string;
-	backendSessionId?: string;
+	mcpServers?: NewSessionRequest["mcpServers"];
 	modeId: SessionModeId;
 	modelId?: string;
-	customCommands: CustomSlashCommand[];
-	skills: CustomSkill[];
+	lastAgentModeId: "default" | "autoRunAllCommands";
 	cancelled: boolean;
-	activeRun?: {
-		cancel: () => void;
-	};
-}
-
-interface PromptAttemptResult {
-	stopReason: PromptResponse["stopReason"];
-	rejectedToolCalls: RejectedToolCall[];
+	activePrompt?: ActivePromptState;
+	backendSessionId?: string;
+	nativeAvailableCommands: AvailableCommand[];
+	nativeClient?: NativeSessionBackend;
+	notificationsReady: boolean;
+	pendingNotifications: SessionNotification[];
 }
 
 export interface CursorAcpAgentOptions {
 	runner?: CursorCliRunner;
 	auth?: CursorAuthClient;
 	logger?: Logger;
+	createNativeClient?: (
+		options: CreateNativeSessionOptions,
+		callbacks: NativeSessionCallbacks,
+	) => NativeSessionBackend;
+	nativeCommand?: string;
 }
 
 export class CursorAcpAgent implements Agent {
@@ -94,6 +103,11 @@ export class CursorAcpAgent implements Agent {
 	private readonly runner: CursorCliRunner;
 	private readonly auth: CursorAuthClient;
 	private readonly logger: Logger;
+	private readonly createNativeClient: (
+		options: CreateNativeSessionOptions,
+		callbacks: NativeSessionCallbacks,
+	) => NativeSessionBackend;
+	private readonly nativeCommand?: string;
 
 	constructor(
 		private readonly client: AgentSideConnection,
@@ -102,32 +116,25 @@ export class CursorAcpAgent implements Agent {
 		this.runner = options.runner ?? new CursorCliRunner();
 		this.auth = options.auth ?? new CursorAuth();
 		this.logger = options.logger ?? console;
+		this.nativeCommand = options.nativeCommand;
+		this.createNativeClient =
+			options.createNativeClient ??
+			((nativeOptions, callbacks) => new CursorNativeAcpClient(nativeOptions, callbacks));
 	}
 
 	async initialize(request: InitializeRequest): Promise<InitializeResponse> {
 		this.clientCapabilities = request.clientCapabilities;
 
-		const authMethod: {
-			id: string;
-			name: string;
-			description: string;
-			_meta?: {
-				"terminal-auth": {
-					command: string;
-					args: string[];
-					label: string;
-				};
-			};
-		} = {
-			id: "cursor-login",
-			name: "Log in with Cursor CLI",
-			description: "Run `agent login`",
+		const authMethod: NonNullable<InitializeResponse["authMethods"]>[number] = {
+			id: "cursor_login",
+			name: "Cursor Login",
+			description: "Authenticate using Cursor CLI credentials",
 		};
 
 		if (request.clientCapabilities?._meta?.["terminal-auth"] === true) {
 			authMethod._meta = {
 				"terminal-auth": {
-					command: "agent",
+					command: this.nativeCommand ?? "agent",
 					args: ["login"],
 					label: "Cursor CLI Login",
 				},
@@ -137,6 +144,11 @@ export class CursorAcpAgent implements Agent {
 		return {
 			protocolVersion: 1,
 			agentCapabilities: {
+				loadSession: true,
+				mcpCapabilities: {
+					http: true,
+					sse: true,
+				},
 				promptCapabilities: {
 					image: true,
 					embeddedContext: true,
@@ -158,7 +170,11 @@ export class CursorAcpAgent implements Agent {
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
 		const sessionId = randomUUID();
-		return await this.createSession({ sessionId, cwd: params.cwd });
+		return await this.createSession({
+			sessionId,
+			cwd: params.cwd,
+			mcpServers: params.mcpServers,
+		});
 	}
 
 	async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
@@ -166,23 +182,17 @@ export class CursorAcpAgent implements Agent {
 		return await this.createSession({
 			sessionId,
 			cwd: params.cwd,
-			backendSessionId: params.sessionId,
 		});
 	}
 
 	async unstable_resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
-		const filePath = await findSessionFile(params.sessionId, params.cwd);
-		const { backendSessionId } = filePath
-			? await readSessionMeta(filePath)
-			: { backendSessionId: undefined };
-
 		const response = await this.createSession({
 			sessionId: params.sessionId,
 			cwd: params.cwd,
-			backendSessionId: backendSessionId ?? params.sessionId,
+			mcpServers: params.mcpServers,
 		});
 
-		// Replay session history so the client sees previous messages
+		const filePath = await findSessionFile(params.sessionId, params.cwd);
 		if (filePath) {
 			await replaySessionHistory({
 				sessionId: params.sessionId,
@@ -233,19 +243,20 @@ export class CursorAcpAgent implements Agent {
 	async loadSession(params: {
 		sessionId: string;
 		cwd: string;
-		mcpServers?: unknown[];
-	}): Promise<{ modes: NewSessionResponse["modes"]; models: NewSessionResponse["models"] }> {
+		mcpServers?: NewSessionRequest["mcpServers"];
+	}): Promise<{
+		modes: NewSessionResponse["modes"];
+		models: NewSessionResponse["models"];
+	}> {
 		const filePath = await findSessionFile(params.sessionId, params.cwd);
 		if (!filePath) {
 			throw new Error("Session not found");
 		}
 
-		const { backendSessionId } = await readSessionMeta(filePath);
-
 		const response = await this.createSession({
 			sessionId: params.sessionId,
 			cwd: params.cwd,
-			backendSessionId: backendSessionId ?? params.sessionId,
+			mcpServers: params.mcpServers,
 		});
 
 		await replaySessionHistory({
@@ -262,7 +273,11 @@ export class CursorAcpAgent implements Agent {
 		};
 	}
 
-	async authenticate(_params: AuthenticateRequest): Promise<void> {
+	async authenticate(params: AuthenticateRequest): Promise<void> {
+		if (params.methodId !== "cursor_login" && params.methodId !== "cursor-login") {
+			throw RequestError.invalidParams(`Unsupported auth method: ${params.methodId}`);
+		}
+
 		const status = await this.auth.ensureLoggedIn();
 		if (!status.loggedIn) {
 			throw RequestError.authRequired();
@@ -270,21 +285,8 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
-		const session = this.sessions[params.sessionId];
-		if (!session) {
-			throw RequestError.invalidParams("Session not found");
-		}
-
-		const status = await this.auth.status();
-		if (!status.loggedIn) {
-			throw RequestError.authRequired();
-		}
-
-		session.cancelled = false;
-		let promptText = promptToCursorText(params);
-
-		// Record user message to session history
-		await recordUserMessage(session.cwd, session.sessionId, promptText);
+		const session = this.requireSession(params.sessionId);
+		const promptText = promptToCursorText(params);
 
 		const slash = parseLeadingSlashCommand(promptText);
 		if (slash.hasSlash) {
@@ -292,16 +294,15 @@ export class CursorAcpAgent implements Agent {
 				session,
 				auth: this.auth,
 				listModels: async () => await this.runner.listModels(),
-				customCommands: session.customCommands,
-				skills: session.skills,
+				availableCommands: session.nativeAvailableCommands,
 				onModeChanged: async (modeId) => {
-					await this.client.sessionUpdate({
-						sessionId: session.sessionId,
-						update: {
-							sessionUpdate: "current_mode_update",
-							currentModeId: modeId,
-						},
-					});
+					await this.applySessionMode(session, modeId);
+				},
+				onModelChanged: async (modelId) => {
+					session.modelId = modelId;
+					if (session.nativeClient?.alive) {
+						await this.restartBackend(session);
+					}
 				},
 			});
 
@@ -321,103 +322,89 @@ export class CursorAcpAgent implements Agent {
 							},
 						},
 					});
-				}
-
-				if (session.cancelled) {
-					return { stopReason: "cancelled" };
+					await recordAssistantMessage(
+						session.cwd,
+						session.sessionId,
+						handled.responseText,
+					);
 				}
 
 				return { stopReason: "end_turn" };
 			}
-
-			const skillPrompt = resolveSkillSlashCommandPrompt(slash.command, session.skills);
-			if (skillPrompt) {
-				const extra = slash.args.trim();
-				promptText = extra ? `${skillPrompt}\n\n${extra}` : skillPrompt;
-			} else {
-				const customPrompt = resolveCustomSlashCommandPrompt(
-					slash.command,
-					slash.args,
-					session.customCommands,
-				);
-				if (customPrompt) {
-					promptText = customPrompt;
-				}
-			}
 		}
 
-		const firstAttempt = await this.runPromptAttempt(session, promptText, false);
-
-		if (firstAttempt.stopReason === "cancelled" || session.cancelled) {
-			return { stopReason: "cancelled" };
+		const status = await this.auth.status();
+		if (!status.loggedIn) {
+			throw RequestError.authRequired();
 		}
 
-		if (
-			firstAttempt.stopReason === "end_turn" &&
-			(session.modeId === "default" || session.modeId === "acceptEdits") &&
-			firstAttempt.rejectedToolCalls.length > 0
-		) {
-			const approved = await this.requestPermissionToRetry(
-				session.sessionId,
-				firstAttempt.rejectedToolCalls[0],
-			);
+		session.cancelled = false;
+		await recordUserMessage(session.cwd, session.sessionId, promptText);
+
+		await this.ensureBackend(session);
+		session.activePrompt = { assistantTextChunks: [] };
+
+		try {
+			const result = await session.nativeClient!.prompt(promptText);
 
 			if (session.cancelled) {
 				return { stopReason: "cancelled" };
 			}
 
-			if (approved === "allow_always") {
-				session.modeId = "bypassPermissions";
-				await this.client.sessionUpdate({
-					sessionId: session.sessionId,
-					update: {
-						sessionUpdate: "current_mode_update",
-						currentModeId: session.modeId,
-					},
-				});
+			if (
+				result.stopReason === "end_turn" &&
+				session.activePrompt.assistantTextChunks.length > 0
+			) {
+				await recordAssistantMessage(
+					session.cwd,
+					session.sessionId,
+					session.activePrompt.assistantTextChunks.join(""),
+				);
 			}
 
-			if (approved === "allow_once" || approved === "allow_always") {
-				return await this.runPromptAttempt(session, promptText, true);
+			return result;
+		} catch (error) {
+			if (session.cancelled) {
+				return { stopReason: "cancelled" };
 			}
+
+			if (error instanceof RequestError) {
+				throw error;
+			}
+
+			throw RequestError.internalError(undefined, String(error));
+		} finally {
+			session.activePrompt = undefined;
 		}
-
-		return { stopReason: firstAttempt.stopReason };
 	}
 
 	async cancel(params: CancelNotification): Promise<void> {
-		const session = this.sessions[params.sessionId];
-		if (!session) {
-			throw RequestError.invalidParams("Session not found");
-		}
-
+		const session = this.requireSession(params.sessionId);
 		session.cancelled = true;
-		session.activeRun?.cancel();
+		await session.nativeClient?.cancel();
 	}
 
 	async unstable_setSessionModel(
 		params: SetSessionModelRequest,
 	): Promise<SetSessionModelResponse | void> {
-		const session = this.sessions[params.sessionId];
-		if (!session) {
-			throw RequestError.invalidParams("Session not found");
+		const session = this.requireSession(params.sessionId);
+		if (session.activePrompt) {
+			throw RequestError.invalidParams("Cannot change model during an active prompt");
 		}
 
 		session.modelId = params.modelId;
+		await this.restartBackend(session);
 		return {};
 	}
 
 	async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
-		const session = this.sessions[params.sessionId];
-		if (!session) {
-			throw RequestError.invalidParams("Session not found");
-		}
-
-		if (!SUPPORTED_MODE_IDS.includes(params.modeId as SessionModeId)) {
+		const session = this.requireSession(params.sessionId);
+		const modeId = normalizeModeId(params.modeId);
+		if (!modeId) {
 			throw RequestError.invalidParams(`Invalid mode: ${params.modeId}`);
 		}
 
-		session.modeId = params.modeId as SessionModeId;
+		await this.applySessionMode(session, modeId);
 		return {};
 	}
 
@@ -432,47 +419,28 @@ export class CursorAcpAgent implements Agent {
 	private async createSession(params: {
 		sessionId: string;
 		cwd: string;
-		backendSessionId?: string;
+		mcpServers?: NewSessionRequest["mcpServers"];
 	}): Promise<NewSessionResponse> {
 		const modeId = parseDefaultMode() ?? DEFAULT_MODE_ID;
-		const modelId = parseDefaultModel();
-
 		const session: SessionState = {
 			sessionId: params.sessionId,
 			cwd: params.cwd,
-			backendSessionId: params.backendSessionId,
+			mcpServers: params.mcpServers,
 			modeId,
-			modelId,
-			customCommands: [],
-			skills: [],
+			modelId: parseDefaultModel(),
+			lastAgentModeId: modeId === "autoRunAllCommands" ? "autoRunAllCommands" : "default",
 			cancelled: false,
+			nativeAvailableCommands: [],
+			notificationsReady: false,
+			pendingNotifications: [],
 		};
 
-		if (!session.backendSessionId) {
-			try {
-				session.backendSessionId = await this.runner.createChat();
-			} catch (error) {
-				this.logger.error(
-					"[cursor-acp] create-chat failed, using lazy backend session binding",
-					error,
-				);
-			}
-		}
-
-		// Persist session metadata so loadSession can recover the backendSessionId
-		try {
-			await recordSessionMeta(params.cwd, params.sessionId, session.backendSessionId);
-		} catch (error) {
-			this.logger.error("[cursor-acp] Failed to record session meta", error);
-		}
-
-		const models = await this.getAvailableModels(session);
-		session.customCommands = await this.getAvailableSlashCommands(session.cwd);
-		session.skills = await this.getAvailableSkills(session.cwd);
 		this.sessions[session.sessionId] = session;
 
+		const models = await this.getAvailableModels(session);
+		session.notificationsReady = true;
 		setTimeout(() => {
-			void this.emitAvailableCommands(session);
+			void this.flushPendingNotifications(session);
 		}, 0);
 
 		return {
@@ -482,8 +450,71 @@ export class CursorAcpAgent implements Agent {
 		};
 	}
 
-	private async getAvailableModels(session: SessionState): Promise<SessionModelState> {
-		let listed = [] as Awaited<ReturnType<CursorCliRunner["listModels"]>>;
+	private async createBackend(session: SessionState): Promise<void> {
+		const nativeClient = this.createNativeClient(
+			{
+				clientCapabilities: this.clientCapabilities,
+				command: this.nativeCommand,
+				cwd: session.cwd,
+				logger: this.logger,
+				mcpServers: session.mcpServers,
+				modelId: session.modelId,
+			},
+			{
+				onSessionUpdate: async (notification) => {
+					await this.handleNativeSessionUpdate(session, notification);
+				},
+				onRequestPermission: async (request) => {
+					return await this.handleNativePermissionRequest(session, request);
+				},
+				onReadTextFile: async (request) => await this.client.readTextFile(request),
+				onWriteTextFile: async (request) => await this.client.writeTextFile(request),
+				onUnexpectedClose: (error) => {
+					if (session.nativeClient === nativeClient) {
+						session.nativeClient = undefined;
+						session.backendSessionId = undefined;
+					}
+					this.logger.error("[cursor-acp] native ACP backend closed", error);
+				},
+			},
+		);
+
+		session.nativeClient = nativeClient;
+		const response = await nativeClient.createSessionBackend();
+		session.backendSessionId = response.sessionId;
+
+		try {
+			await recordSessionMeta(session.cwd, session.sessionId, session.backendSessionId);
+		} catch (error) {
+			this.logger.error("[cursor-acp] Failed to record session meta", error);
+		}
+
+		if (session.modeId === "ask" || session.modeId === "plan") {
+			await nativeClient.setNativeMode(this.modeToNativeMode(session.modeId));
+		}
+	}
+
+	private async ensureBackend(session: SessionState): Promise<void> {
+		if (session.nativeClient?.alive) {
+			return;
+		}
+
+		await this.createBackend(session);
+	}
+
+	private async restartBackend(session: SessionState): Promise<void> {
+		if (session.activePrompt) {
+			throw RequestError.invalidParams("Cannot restart backend during an active prompt");
+		}
+
+		await session.nativeClient?.close();
+		session.nativeClient = undefined;
+		session.backendSessionId = undefined;
+		await this.createBackend(session);
+	}
+
+	private async getAvailableModels(session: SessionState) {
+		let listed: CursorModelDescriptor[] = [];
 		try {
 			listed = await this.runner.listModels();
 		} catch (error) {
@@ -506,225 +537,180 @@ export class CursorAcpAgent implements Agent {
 		};
 	}
 
-	private async getAvailableSlashCommands(workspace: string): Promise<CustomSlashCommand[]> {
-		try {
-			return await loadCustomSlashCommands(workspace);
-		} catch (error) {
-			this.logger.error("[cursor-acp] Unable to load custom slash commands", error);
-			return [];
-		}
-	}
+	private async handleNativeSessionUpdate(
+		session: SessionState,
+		notification: SessionNotification,
+	): Promise<void> {
+		const update = notification.update;
 
-	private async getAvailableSkills(workspace: string): Promise<CustomSkill[]> {
-		try {
-			const skills = await loadCustomSkills(workspace);
-			return skills.filter((skill) => skill.origin === "user");
-		} catch (error) {
-			this.logger.error("[cursor-acp] Unable to load skills", error);
-			return [];
+		if (
+			update.sessionUpdate === "agent_message_chunk" &&
+			update.content?.type === "text" &&
+			session.activePrompt
+		) {
+			session.activePrompt.assistantTextChunks.push(update.content.text);
 		}
-	}
 
-	private async emitAvailableCommands(session: SessionState): Promise<void> {
-		await this.client.sessionUpdate({
+		if (update.sessionUpdate === "current_mode_update") {
+			const translatedMode = this.translateNativeMode(session, update.currentModeId);
+			session.modeId = translatedMode;
+			await this.emitOrQueueNotification(session, {
+				sessionId: session.sessionId,
+				update: {
+					sessionUpdate: "current_mode_update",
+					currentModeId: translatedMode,
+				},
+			});
+			return;
+		}
+
+		if (update.sessionUpdate === "available_commands_update") {
+			session.nativeAvailableCommands = update.availableCommands ?? [];
+			await this.emitOrQueueNotification(session, {
+				sessionId: session.sessionId,
+				update: {
+					sessionUpdate: "available_commands_update",
+					availableCommands: availableSlashCommands(session.nativeAvailableCommands),
+				},
+			});
+			return;
+		}
+
+		await this.emitOrQueueNotification(session, {
 			sessionId: session.sessionId,
-			update: {
-				sessionUpdate: "available_commands_update",
-				availableCommands: availableSlashCommands(session.customCommands, session.skills),
-			},
+			update,
 		});
 	}
 
-	private modeToRunnerOptions(
+	private async emitOrQueueNotification(
 		session: SessionState,
-		forceRetry: boolean,
-	): {
-		modeId?: "plan" | "ask";
-		force: boolean;
-	} {
-		if (forceRetry) {
-			return { force: true };
+		notification: SessionNotification,
+	): Promise<void> {
+		if (!session.notificationsReady) {
+			session.pendingNotifications.push(notification);
+			return;
 		}
 
-		switch (session.modeId) {
-			case "plan":
-				return { modeId: "plan", force: false };
-			case "ask":
-				return { modeId: "ask", force: false };
-			case "bypassPermissions":
-				return { force: true };
-			case "acceptEdits":
+		await this.client.sessionUpdate(notification);
+	}
+
+	private async flushPendingNotifications(session: SessionState): Promise<void> {
+		if (!session.notificationsReady || session.pendingNotifications.length === 0) {
+			return;
+		}
+
+		const notifications = session.pendingNotifications.splice(0);
+		for (const notification of notifications) {
+			await this.client.sessionUpdate(notification);
+		}
+	}
+
+	private async handleNativePermissionRequest(
+		session: SessionState,
+		request: RequestPermissionRequest,
+	): Promise<RequestPermissionResponse> {
+		if (session.cancelled) {
+			return { outcome: { outcome: "cancelled" } };
+		}
+
+		if (session.modeId === "autoRunAllCommands") {
+			return this.approvePermissionRequest(request);
+		}
+
+		return await this.client.requestPermission({
+			...request,
+			sessionId: session.sessionId,
+		});
+	}
+
+	private approvePermissionRequest(request: RequestPermissionRequest): RequestPermissionResponse {
+		const normalizedKinds = request.options.map((option) => ({
+			optionId: option.optionId,
+			kind: option.kind.replace(/-/g, "_"),
+		}));
+
+		const allowAlways = normalizedKinds.find((option) => option.kind === "allow_always");
+		if (allowAlways) {
+			return {
+				outcome: {
+					outcome: "selected",
+					optionId: allowAlways.optionId,
+				},
+			};
+		}
+
+		const allowOnce = normalizedKinds.find((option) => option.kind === "allow_once");
+		if (allowOnce) {
+			return {
+				outcome: {
+					outcome: "selected",
+					optionId: allowOnce.optionId,
+				},
+			};
+		}
+
+		const fallback = request.options.find((option) => option.kind.startsWith("allow"));
+		if (!fallback) {
+			throw RequestError.internalError(
+				undefined,
+				"Native ACP permission request did not expose an allow option",
+			);
+		}
+
+		return {
+			outcome: {
+				outcome: "selected",
+				optionId: fallback.optionId,
+			},
+		};
+	}
+
+	private modeToNativeMode(modeId: SessionModeId): NativeModeId {
+		switch (modeId) {
 			case "default":
-				return { force: false };
-			default:
-				unreachable(session.modeId, this.logger);
+			case "autoRunAllCommands":
+				return "agent";
+			case "ask":
+				return "ask";
+			case "plan":
+				return "plan";
 		}
 	}
 
-	private async runPromptAttempt(
-		session: SessionState,
-		promptText: string,
-		forceRetry: boolean,
-	): Promise<PromptAttemptResult> {
-		const rejectedToolCalls: RejectedToolCall[] = [];
-		const toolUseCache: Record<string, CachedToolUse> = {};
-		const modeSettings = this.modeToRunnerOptions(session, forceRetry);
-		const assistantTextChunks: string[] = [];
-
-		const run = this.runner.startPrompt({
-			workspace: session.cwd,
-			backendSessionId: session.backendSessionId,
-			prompt: promptText,
-			modelId: session.modelId,
-			modeId: modeSettings.modeId,
-			force: modeSettings.force,
-			onEvent: async (event) => {
-				const mapped = mapCursorEventToAcp(event, {
-					sessionId: session.sessionId,
-					toolUseCache,
-					logger: this.logger,
-				});
-
-				if (mapped.backendSessionId) {
-					session.backendSessionId = mapped.backendSessionId;
-				}
-
-				if (
-					mapped.currentModeId &&
-					SUPPORTED_MODE_IDS.includes(mapped.currentModeId as SessionModeId)
-				) {
-					session.modeId = mapped.currentModeId as SessionModeId;
-				}
-
-				if (mapped.rejectedToolCall) {
-					rejectedToolCalls.push(mapped.rejectedToolCall);
-				}
-
-				for (const notification of mapped.notifications) {
-					// Collect assistant text for history recording
-					if (
-						notification.update.sessionUpdate === "agent_message_chunk" &&
-						notification.update.content?.type === "text"
-					) {
-						assistantTextChunks.push(notification.update.content.text);
-					}
-					await this.client.sessionUpdate(notification);
-				}
-			},
-		});
-
-		session.activeRun = run;
-
-		try {
-			const completed = await run.completed;
-			session.activeRun = undefined;
-
-			if (session.cancelled) {
-				return {
-					stopReason: "cancelled",
-					rejectedToolCalls,
-				};
-			}
-
-			const resultEvent = completed.resultEvent;
-			if (!resultEvent) {
-				throw RequestError.internalError(
-					undefined,
-					"Cursor CLI did not emit a result event",
-				);
-			}
-
-			const subtype = typeof resultEvent.subtype === "string" ? resultEvent.subtype : "";
-			const isError = resultEvent.is_error === true;
-
-			if (subtype === "success" && !isError) {
-				// Record assistant response to session history
-				if (assistantTextChunks.length > 0) {
-					await recordAssistantMessage(
-						session.cwd,
-						session.sessionId,
-						assistantTextChunks.join(""),
-					);
-				}
-				return {
-					stopReason: "end_turn",
-					rejectedToolCalls,
-				};
-			}
-
-			if (
-				subtype.includes("max_turn") ||
-				subtype.includes("max_budget") ||
-				subtype.includes("max_structured")
-			) {
-				return {
-					stopReason: "max_turn_requests",
-					rejectedToolCalls,
-				};
-			}
-
-			const resultText =
-				typeof resultEvent.result === "string" ? resultEvent.result : subtype;
-			throw RequestError.internalError(undefined, resultText || "Cursor CLI failed");
-		} catch (error) {
-			session.activeRun = undefined;
-			if (session.cancelled) {
-				return {
-					stopReason: "cancelled",
-					rejectedToolCalls,
-				};
-			}
-
-			if (error instanceof RequestError) {
-				throw error;
-			}
-
-			throw RequestError.internalError(undefined, String(error));
+	private translateNativeMode(session: SessionState, nativeModeId: string): SessionModeId {
+		switch (nativeModeId) {
+			case "agent":
+				return session.lastAgentModeId;
+			case "ask":
+				return "ask";
+			case "plan":
+				return "plan";
+			default:
+				return session.modeId;
 		}
 	}
 
-	private async requestPermissionToRetry(
-		sessionId: string,
-		rejectedToolCall: RejectedToolCall,
-	): Promise<"allow_once" | "allow_always" | "reject"> {
-		const response = await this.client.requestPermission({
-			options: [
-				{
-					kind: "allow_once",
-					name: "Allow once",
-					optionId: "allow_once",
-				},
-				{
-					kind: "allow_always",
-					name: "Always allow",
-					optionId: "allow_always",
-				},
-				{
-					kind: "reject_once",
-					name: "Reject",
-					optionId: "reject",
-				},
-			],
-			sessionId,
-			toolCall: {
-				toolCallId: rejectedToolCall.toolCallId,
-				rawInput: rejectedToolCall.rawInput,
-				title: rejectedToolCall.title,
-			},
-		});
-
-		if (response.outcome?.outcome !== "selected") {
-			return "reject";
+	private async applySessionMode(session: SessionState, modeId: SessionModeId): Promise<void> {
+		session.modeId = modeId;
+		if (modeId === "default" || modeId === "autoRunAllCommands") {
+			session.lastAgentModeId = modeId;
 		}
 
-		switch (response.outcome.optionId) {
-			case "allow_once":
-			case "allow_always":
-				return response.outcome.optionId;
-			case "reject":
-			default:
-				return "reject";
+		if (!session.nativeClient?.alive) {
+			return;
 		}
+
+		const nativeMode = this.modeToNativeMode(modeId);
+		await session.nativeClient!.setNativeMode(nativeMode);
+	}
+
+	private requireSession(sessionId: string): SessionState {
+		const session = this.sessions[sessionId];
+		if (!session) {
+			throw RequestError.invalidParams("Session not found");
+		}
+
+		return session;
 	}
 }
 
