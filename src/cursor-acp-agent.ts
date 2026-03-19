@@ -154,6 +154,11 @@ export class CursorAcpAgent implements Agent {
 					embeddedContext: true,
 				},
 				sessionCapabilities: {
+					_meta: {
+						supportsSessionModes: true,
+						supportsSetMode: true,
+						supportsSetModel: true,
+					},
 					fork: {},
 					resume: {},
 					list: {},
@@ -250,7 +255,20 @@ export class CursorAcpAgent implements Agent {
 	}> {
 		const filePath = await findSessionFile(params.sessionId, params.cwd);
 		if (!filePath) {
-			throw new Error("Session not found");
+			this.logger.error(
+				`[cursor-acp] Session file not found for sessionId: ${params.sessionId}, creating new session`,
+			);
+
+			const response = await this.createSession({
+				sessionId: params.sessionId,
+				cwd: params.cwd,
+				mcpServers: params.mcpServers,
+			});
+
+			return {
+				modes: response.modes,
+				models: response.models,
+			};
 		}
 
 		const response = await this.createSession({
@@ -290,46 +308,48 @@ export class CursorAcpAgent implements Agent {
 
 		const slash = parseLeadingSlashCommand(promptText);
 		if (slash.hasSlash) {
-			const handled = await handleSlashCommand(slash.command, slash.args, {
-				session,
-				auth: this.auth,
-				listModels: async () => await this.runner.listModels(),
-				availableCommands: session.nativeAvailableCommands,
-				onModeChanged: async (modeId) => {
-					await this.applySessionMode(session, modeId);
-				},
-				onModelChanged: async (modelId) => {
-					session.modelId = modelId;
-					if (session.nativeClient?.alive) {
-						await this.restartBackend(session);
+			if (!this.hasNativeSlashCommand(session, slash.command)) {
+				const handled = await handleSlashCommand(slash.command, slash.args, {
+					session,
+					auth: this.auth,
+					listModels: async () => await this.runner.listModels(),
+					availableCommands: availableSlashCommands(session.nativeAvailableCommands),
+					onModeChanged: async (modeId) => {
+						await this.applySessionMode(session, modeId);
+					},
+					onModelChanged: async (modelId) => {
+						session.modelId = modelId;
+						if (session.nativeClient?.alive) {
+							await this.restartBackend(session);
+						}
+					},
+				});
+
+				if (handled.handled) {
+					if (session.cancelled) {
+						return { stopReason: "cancelled" };
 					}
-				},
-			});
 
-			if (handled.handled) {
-				if (session.cancelled) {
-					return { stopReason: "cancelled" };
-				}
-
-				if (handled.responseText) {
-					await this.client.sessionUpdate({
-						sessionId: session.sessionId,
-						update: {
-							sessionUpdate: "agent_message_chunk",
-							content: {
-								type: "text",
-								text: handled.responseText,
+					if (handled.responseText) {
+						await this.client.sessionUpdate({
+							sessionId: session.sessionId,
+							update: {
+								sessionUpdate: "agent_message_chunk",
+								content: {
+									type: "text",
+									text: handled.responseText,
+								},
 							},
-						},
-					});
-					await recordAssistantMessage(
-						session.cwd,
-						session.sessionId,
-						handled.responseText,
-					);
-				}
+						});
+						await recordAssistantMessage(
+							session.cwd,
+							session.sessionId,
+							handled.responseText,
+						);
+					}
 
-				return { stopReason: "end_turn" };
+					return { stopReason: "end_turn" };
+				}
 			}
 		}
 
@@ -396,6 +416,20 @@ export class CursorAcpAgent implements Agent {
 		await this.restartBackend(session);
 		return {};
 	}
+
+	async extMethod(
+		method: string,
+		params: Record<string, unknown>,
+	): Promise<Record<string, unknown>> {
+		if (method === "session/set_model") {
+			const response = await this.unstable_setSessionModel(params as SetSessionModelRequest);
+			return (response ?? {}) as Record<string, unknown>;
+		}
+
+		throw RequestError.methodNotFound(method);
+	}
+
+	async extNotification(_method: string, _params: Record<string, unknown>): Promise<void> {}
 
 	async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
 		const session = this.requireSession(params.sessionId);
@@ -466,6 +500,18 @@ export class CursorAcpAgent implements Agent {
 				},
 				onRequestPermission: async (request) => {
 					return await this.handleNativePermissionRequest(session, request);
+				},
+				onExtMethod: async (method, params) => {
+					return await this.client.extMethod(
+						method,
+						this.rewriteNativeExtensionParams(session, params),
+					);
+				},
+				onExtNotification: async (method, params) => {
+					await this.client.extNotification(
+						method,
+						this.rewriteNativeExtensionParams(session, params),
+					);
 				},
 				onReadTextFile: async (request) => await this.client.readTextFile(request),
 				onWriteTextFile: async (request) => await this.client.writeTextFile(request),
@@ -603,6 +649,33 @@ export class CursorAcpAgent implements Agent {
 		for (const notification of notifications) {
 			await this.client.sessionUpdate(notification);
 		}
+	}
+
+	private hasNativeSlashCommand(session: SessionState, commandName: string): boolean {
+		const normalized = commandName.toLowerCase();
+		return session.nativeAvailableCommands.some(
+			(command) => command.name.toLowerCase() === normalized,
+		);
+	}
+
+	/**
+	 * Native `agent acp` uses the backend session id in payloads; the outer ACP client
+	 * only knows the wrapper session id. Rewrite when the id is missing or matches the backend.
+	 */
+	private rewriteNativeExtensionParams(
+		session: SessionState,
+		params: Record<string, unknown>,
+	): Record<string, unknown> {
+		const sid = params.sessionId;
+		const backendId = session.backendSessionId;
+		if (
+			sid === undefined ||
+			(typeof sid === "string" && backendId !== undefined && sid === backendId)
+		) {
+			return { ...params, sessionId: session.sessionId };
+		}
+
+		return { ...params };
 	}
 
 	private async handleNativePermissionRequest(

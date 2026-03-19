@@ -30,6 +30,13 @@ export interface NativeSessionCallbacks {
 	) => Promise<RequestPermissionResponse> | RequestPermissionResponse;
 	onReadTextFile?: (request: ReadTextFileRequest) => Promise<ReadTextFileResponse>;
 	onWriteTextFile?: (request: WriteTextFileRequest) => Promise<WriteTextFileResponse>;
+	/** Forward Cursor ACP extension requests (e.g. `cursor/ask_question`) to the outer client. */
+	onExtMethod?: (
+		method: string,
+		params: Record<string, unknown>,
+	) => Promise<Record<string, unknown>>;
+	/** Forward Cursor ACP extension notifications (e.g. `cursor/update_todos`) to the outer client. */
+	onExtNotification?: (method: string, params: Record<string, unknown>) => Promise<void>;
 	onUnexpectedClose?: (error: Error) => void;
 }
 
@@ -87,11 +94,20 @@ class NativeClientHandler implements Client {
 		method: string,
 		params: Record<string, unknown>,
 	): Promise<Record<string, unknown>> {
+		if (this.callbacks.onExtMethod) {
+			return await this.callbacks.onExtMethod(method, params);
+		}
+
 		this.logger.warn?.("[cursor-acp] ignoring native ACP extension method", method, params);
 		return {};
 	}
 
 	async extNotification(method: string, params: Record<string, unknown>): Promise<void> {
+		if (this.callbacks.onExtNotification) {
+			await this.callbacks.onExtNotification(method, params);
+			return;
+		}
+
 		this.logger.warn?.(
 			"[cursor-acp] ignoring native ACP extension notification",
 			method,
