@@ -9,7 +9,11 @@ import {
 	NativeSessionCallbacks,
 } from "../cursor-native-acp-client.js";
 import { CursorAcpAgent } from "../cursor-acp-agent.js";
-import { recordAssistantMessage, recordSessionMeta, recordUserMessage } from "../session-storage.js";
+import {
+	recordAssistantMessage,
+	recordSessionMeta,
+	recordUserMessage,
+} from "../session-storage.js";
 
 class FakeClient {
 	updates: any[] = [];

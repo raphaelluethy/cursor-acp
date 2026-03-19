@@ -109,7 +109,8 @@ export function availableModes(currentModeId: SessionModeId) {
 			{
 				id: "yolo",
 				name: "Yolo",
-				description: "Agent mode with automatic approval for all native permission requests",
+				description:
+					"Agent mode with automatic approval for all native permission requests",
 			},
 			{
 				id: "ask",
