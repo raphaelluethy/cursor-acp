@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,9 @@ import { recordAssistantMessage, recordUserMessage } from "../session-storage.js
 class FakeClient {
 	updates: any[] = [];
 	permissionCalls: any[] = [];
+	extMethodCalls: { method: string; params: Record<string, unknown> }[] = [];
+	extNotificationCalls: { method: string; params: Record<string, unknown> }[] = [];
+	extMethodResponses: Record<string, Record<string, unknown>> = {};
 
 	async sessionUpdate(params: any): Promise<void> {
 		this.updates.push(params);
@@ -28,6 +31,18 @@ class FakeClient {
 				optionId: allowOption?.optionId ?? params.options[0]?.optionId ?? "allow-once",
 			},
 		};
+	}
+
+	async extMethod(
+		method: string,
+		params: Record<string, unknown>,
+	): Promise<Record<string, unknown>> {
+		this.extMethodCalls.push({ method, params });
+		return this.extMethodResponses[method] ?? {};
+	}
+
+	async extNotification(method: string, params: Record<string, unknown>): Promise<void> {
+		this.extNotificationCalls.push({ method, params });
 	}
 
 	async readTextFile(_params: any): Promise<any> {
@@ -113,6 +128,29 @@ class FakeNativeBackend implements NativeSessionBackend {
 		} as any);
 		return {};
 	}
+
+	/** Simulate native `agent acp` invoking a Cursor extension RPC toward the client. */
+	async simulateNativeExtMethod(
+		method: string,
+		params: Record<string, unknown>,
+	): Promise<Record<string, unknown>> {
+		if (!this.callbacks.onExtMethod) {
+			throw new Error("onExtMethod not wired");
+		}
+
+		return await this.callbacks.onExtMethod(method, params);
+	}
+
+	async simulateNativeExtNotification(
+		method: string,
+		params: Record<string, unknown>,
+	): Promise<void> {
+		if (!this.callbacks.onExtNotification) {
+			throw new Error("onExtNotification not wired");
+		}
+
+		await this.callbacks.onExtNotification(method, params);
+	}
 }
 
 function createAgentTestHarness() {
@@ -191,9 +229,26 @@ async function startNativeBackend(agent: CursorAcpAgent, sessionId: string): Pro
 	await (agent as any).ensureBackend(session);
 }
 
-afterEach(() => {
+const originalCursorAcpConfigDir = process.env.CURSOR_ACP_CONFIG_DIR;
+let tempConfigDir: string | undefined;
+
+beforeEach(async () => {
+	tempConfigDir = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-config-"));
+	process.env.CURSOR_ACP_CONFIG_DIR = tempConfigDir;
+});
+
+afterEach(async () => {
 	delete process.env.CURSOR_ACP_DEFAULT_MODE;
 	delete process.env.CURSOR_ACP_DEFAULT_MODEL;
+	if (originalCursorAcpConfigDir) {
+		process.env.CURSOR_ACP_CONFIG_DIR = originalCursorAcpConfigDir;
+	} else {
+		delete process.env.CURSOR_ACP_CONFIG_DIR;
+	}
+	if (tempConfigDir) {
+		await rm(tempConfigDir, { recursive: true, force: true });
+		tempConfigDir = undefined;
+	}
 });
 
 describe("CursorAcpAgent", () => {
@@ -221,6 +276,29 @@ describe("CursorAcpAgent", () => {
 		);
 	});
 
+	it("forwards colliding slash commands to the native backend", async () => {
+		const { agent, backends } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+		await startNativeBackend(agent, session.sessionId);
+
+		const response = await agent.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "/mode plan" }],
+		} as any);
+
+		expect(response.stopReason).toBe("end_turn");
+		expect(backends[0]!.promptCalls).toEqual(["/mode plan"]);
+		expect((agent as any).sessions[session.sessionId]?.modeId).toBe("default");
+	});
+
 	it("merges native available commands with wrapper built-ins", async () => {
 		const { agent, client } = createAgentTestHarness();
 
@@ -245,6 +323,46 @@ describe("CursorAcpAgent", () => {
 		expect(names).toContain("mode");
 		expect(names).toContain("commit");
 		expect(names.filter((name: string) => name === "mode")).toHaveLength(1);
+	});
+
+	it("forwards native Cursor extension methods to the outer client with wrapper session id", async () => {
+		const { agent, backends, client } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+		await startNativeBackend(agent, session.sessionId);
+
+		client.extMethodResponses["cursor/ask_question"] = { picked: "a" };
+		const backend = backends[0]!;
+		const result = await backend.simulateNativeExtMethod("cursor/ask_question", {
+			sessionId: backend.nativeSessionId,
+			questionId: "q1",
+		});
+
+		expect(result).toEqual({ picked: "a" });
+		expect(client.extMethodCalls).toEqual([
+			{
+				method: "cursor/ask_question",
+				params: { sessionId: session.sessionId, questionId: "q1" },
+			},
+		]);
+
+		await backend.simulateNativeExtNotification("cursor/update_todos", {
+			sessionId: backend.nativeSessionId,
+			todos: [],
+		});
+		expect(client.extNotificationCalls).toEqual([
+			{
+				method: "cursor/update_todos",
+				params: { sessionId: session.sessionId, todos: [] },
+			},
+		]);
 	});
 
 	it("creates sessions before auth and defers native backend startup until first prompt", async () => {

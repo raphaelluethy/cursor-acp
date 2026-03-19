@@ -65,6 +65,22 @@ describe("slash commands", () => {
 		expect(session.modeId).toBe("autoRunAllCommands");
 	});
 
+	it("prefers native command metadata over built-in command metadata", () => {
+		const commands = availableSlashCommands([
+			{
+				name: "model",
+				description: "Native model command",
+				input: { hint: "<native-model>" },
+			},
+		]);
+
+		expect(commands.find((command) => command.name === "model")).toEqual({
+			name: "model",
+			description: "Native model command",
+			input: { hint: "<native-model>" },
+		});
+	});
+
 	it("loads custom slash commands from workspace and home", async () => {
 		const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-test-"));
 		const workspace = path.join(tempRoot, "workspace");
@@ -132,15 +148,37 @@ describe("slash commands", () => {
 		expect(prompt).toContain("Price: $20");
 	});
 
-	it("keeps wrapper built-ins when merging available commands", () => {
+	it("keeps wrapper built-ins only when native commands do not collide", () => {
 		const commands = availableSlashCommands([
 			{ name: "mode", description: "native mode", input: null },
 			{ name: "commit", description: "commit helper", input: null },
 		]);
 
-		expect(commands.find((command) => command.name === "mode")?.description).toContain(
-			"active mode",
+		expect(commands.find((command) => command.name === "mode")?.description).toBe(
+			"native mode",
 		);
 		expect(commands.some((command) => command.name === "commit")).toBe(true);
+		expect(commands.some((command) => command.name === "help")).toBe(true);
+	});
+
+	it("lists merged command metadata in /help output", async () => {
+		const result = await handleSlashCommand("help", "", {
+			session: { modelId: "auto", modeId: "default" },
+			auth: mockAuth,
+			listModels: async () => [],
+			availableCommands: availableSlashCommands([
+				{
+					name: "model",
+					description: "Native model command",
+					input: { hint: "<native-model>" },
+				},
+				{ name: "commit", description: "commit helper", input: null },
+			]),
+		});
+
+		expect(result.handled).toBe(true);
+		expect(result.responseText).toContain("/model <native-model>");
+		expect(result.responseText).toContain("/commit");
+		expect(result.responseText).toContain("/help");
 	});
 });

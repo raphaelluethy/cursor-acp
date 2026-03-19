@@ -18,7 +18,9 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 
 - **Native ACP backend**: Uses `agent acp` instead of the older `agent --print --output-format stream-json` wrapper path
 - **Tool and message streaming**: Forwards native ACP `session/update` notifications to the client
+- **Cursor extension RPCs**: Forwards native `cursor/*` extension methods and notifications (e.g. `cursor/ask_question`, `cursor/update_todos`) to the outer ACP client when supported
 - **Cursor commands and skills**: Relies on native ACP `available_commands_update` for Cursor/user commands and skills
+- **Native command precedence**: When Cursor advertises a slash command, the adapter forwards that command to native ACP instead of intercepting it locally
 - **Mode switching**: Maps wrapper modes to native `agent`, `ask`, and `plan`
 
 ### Wrapper compatibility
@@ -49,6 +51,7 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 | `/logout` | Sign out of Cursor                     |
 
 Other Cursor commands and skills are forwarded from native `agent acp` via `available_commands_update`.
+If a native Cursor command collides with one of the wrapper commands above, the native command takes precedence.
 
 ## Installation
 
