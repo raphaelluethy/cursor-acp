@@ -58,19 +58,22 @@ const BUILTIN_SLASH_COMMANDS: AvailableCommand[] = [
 
 export function availableSlashCommands(extraCommands: AvailableCommand[] = []): AvailableCommand[] {
 	const deduped = new Map<string, AvailableCommand>();
-	for (const command of BUILTIN_SLASH_COMMANDS) {
+	for (const command of extraCommands) {
 		deduped.set(command.name.toLowerCase(), command);
 	}
 
-	for (const command of extraCommands) {
+	for (const command of BUILTIN_SLASH_COMMANDS) {
 		const key = command.name.toLowerCase();
-		if (deduped.has(key)) {
-			continue;
+		if (!deduped.has(key)) {
+			deduped.set(key, command);
 		}
-		deduped.set(key, command);
 	}
 
 	return [...deduped.values()];
+}
+
+function formatSlashCommand(command: AvailableCommand): string {
+	return command.input?.hint ? `/${command.name} ${command.input.hint}` : `/${command.name}`;
 }
 
 async function collectMarkdownFiles(dir: string): Promise<string[]> {
@@ -270,9 +273,7 @@ export function resolveSkillSlashCommandPrompt(
 }
 
 export function builtInSlashCommandNames(): string[] {
-	return BUILTIN_SLASH_COMMANDS.map((command) =>
-		command.input?.hint ? `/${command.name} ${command.input.hint}` : `/${command.name}`,
-	);
+	return BUILTIN_SLASH_COMMANDS.map(formatSlashCommand);
 }
 
 export function parseModelListOutput(output: string): CursorModelDescriptor[] {
@@ -314,28 +315,12 @@ export async function handleSlashCommand(
 		case "help":
 			return {
 				handled: true,
-				responseText: [
-					`Supported commands: ${builtInSlashCommandNames().join(", ")}`,
-					context.availableCommands?.length
-						? `Other commands: ${context.availableCommands
-								.filter(
-									(command) =>
-										!BUILTIN_SLASH_COMMANDS.some(
-											(builtin) =>
-												builtin.name.toLowerCase() ===
-												command.name.toLowerCase(),
-										),
-								)
-								.map((command) =>
-									command.input?.hint
-										? `/${command.name} ${command.input.hint}`
-										: `/${command.name}`,
-								)
-								.join(", ")}`
-						: null,
-				]
-					.filter(Boolean)
-					.join("\n"),
+				responseText: `Supported commands: ${(context.availableCommands?.length
+					? context.availableCommands
+					: BUILTIN_SLASH_COMMANDS
+				)
+					.map(formatSlashCommand)
+					.join(", ")}`,
 			};
 
 		case "status": {
