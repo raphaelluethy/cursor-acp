@@ -3,7 +3,12 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CursorAuthClient } from "./auth.js";
-import { ADVERTISED_MODE_IDS, normalizeModeId, SessionModeId } from "./settings.js";
+import {
+	ADVERTISED_MODE_IDS,
+	modeDisplayName,
+	normalizeModeId,
+	SessionModeId,
+} from "./settings.js";
 import { CustomSkill, resolveSkillPrompt } from "./skills.js";
 
 export interface CursorModelDescriptor {
@@ -396,10 +401,11 @@ export async function handleSlashCommand(
 
 		case "mode": {
 			const target = args.trim();
+			const modeList = ADVERTISED_MODE_IDS.map(modeDisplayName).join(", ");
 			if (!target) {
 				return {
 					handled: true,
-					responseText: `Current mode: ${context.session.modeId}\nAvailable: ${ADVERTISED_MODE_IDS.join(", ")}`,
+					responseText: `Current mode: ${modeDisplayName(context.session.modeId)}\nAvailable: ${modeList}`,
 				};
 			}
 
@@ -407,7 +413,7 @@ export async function handleSlashCommand(
 			if (!nextMode) {
 				return {
 					handled: true,
-					responseText: `Unknown mode: ${target}. Available: ${ADVERTISED_MODE_IDS.join(", ")}`,
+					responseText: `Unknown mode: ${target}. Available: ${modeList}`,
 				};
 			}
 
@@ -415,7 +421,7 @@ export async function handleSlashCommand(
 			if (context.onModeChanged) {
 				await context.onModeChanged(nextMode);
 			}
-			return { handled: true, responseText: `Mode set to ${nextMode}` };
+			return { handled: true, responseText: `Mode set to ${modeDisplayName(nextMode)}` };
 		}
 
 		default:

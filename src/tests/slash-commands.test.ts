@@ -54,6 +54,19 @@ describe("slash commands", () => {
 
 	it("handles /mode set", async () => {
 		const session = { modelId: "auto", modeId: "default" as const };
+		const result = await handleSlashCommand("mode", "yolo", {
+			session,
+			auth: mockAuth,
+			listModels: async () => [],
+		});
+
+		expect(result.handled).toBe(true);
+		expect(result.responseText).toContain("Mode set to Yolo");
+		expect(session.modeId).toBe("yolo");
+	});
+
+	it("keeps bypassPermissions as a legacy /mode alias", async () => {
+		const session = { modelId: "auto", modeId: "default" as const };
 		const result = await handleSlashCommand("mode", "bypassPermissions", {
 			session,
 			auth: mockAuth,
@@ -61,8 +74,8 @@ describe("slash commands", () => {
 		});
 
 		expect(result.handled).toBe(true);
-		expect(result.responseText).toContain("Mode set to autoRunAllCommands");
-		expect(session.modeId).toBe("autoRunAllCommands");
+		expect(result.responseText).toContain("Mode set to Yolo");
+		expect(session.modeId).toBe("yolo");
 	});
 
 	it("prefers native command metadata over built-in command metadata", () => {

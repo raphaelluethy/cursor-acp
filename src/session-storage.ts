@@ -107,16 +107,18 @@ export async function readSessionMeta(filePath: string): Promise<{ backendSessio
 	try {
 		const content = await fs.promises.readFile(filePath, "utf-8");
 		const lines = content.trim().split("\n").filter(Boolean);
+		let lastBackend: string | undefined;
 		for (const line of lines) {
 			try {
-				const entry = JSON.parse(line);
+				const entry = JSON.parse(line) as { type?: string; backendSessionId?: string };
 				if (entry.type === "session_meta" && entry.backendSessionId) {
-					return { backendSessionId: entry.backendSessionId };
+					lastBackend = entry.backendSessionId;
 				}
 			} catch {
 				continue;
 			}
 		}
+		return lastBackend ? { backendSessionId: lastBackend } : {};
 	} catch {
 		// file not readable
 	}

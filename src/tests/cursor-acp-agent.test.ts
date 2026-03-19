@@ -9,7 +9,7 @@ import {
 	NativeSessionCallbacks,
 } from "../cursor-native-acp-client.js";
 import { CursorAcpAgent } from "../cursor-acp-agent.js";
-import { recordAssistantMessage, recordUserMessage } from "../session-storage.js";
+import { recordAssistantMessage, recordSessionMeta, recordUserMessage } from "../session-storage.js";
 
 class FakeClient {
 	updates: any[] = [];
@@ -58,6 +58,7 @@ class FakeNativeBackend implements NativeSessionBackend {
 	alive = true;
 	closeCalls = 0;
 	createCalls = 0;
+	loadCalls: string[] = [];
 	modeCalls: NativeModeId[] = [];
 	nativeSessionId: string | undefined;
 	promptCalls: string[] = [];
@@ -93,6 +94,40 @@ class FakeNativeBackend implements NativeSessionBackend {
 
 		return {
 			sessionId: this.nativeSessionId!,
+			models: {
+				currentModelId: "auto",
+				availableModels: [{ modelId: "auto", name: "Auto", description: "Auto" }],
+			},
+			modes: {
+				currentModeId: "agent",
+				availableModes: [
+					{ id: "agent", name: "Agent", description: "Agent mode" },
+					{ id: "plan", name: "Plan", description: "Plan mode" },
+					{ id: "ask", name: "Ask", description: "Ask mode" },
+				],
+			},
+		};
+	}
+
+	async loadSessionBackend(nativeSessionId: string): Promise<any> {
+		this.loadCalls.push(nativeSessionId);
+		this.nativeSessionId = nativeSessionId;
+		await this.callbacks.onSessionUpdate({
+			sessionId: this.nativeSessionId!,
+			update: {
+				sessionUpdate: "available_commands_update",
+				availableCommands: [
+					{ name: "commit", description: "Commit helper", input: null },
+					{ name: "mode", description: "Native mode", input: null },
+				],
+			},
+		} as any);
+
+		return {
+			models: {
+				currentModelId: "gpt-5.2",
+				availableModels: [{ modelId: "gpt-5.2", name: "GPT-5.2", description: "GPT-5.2" }],
+			},
 			modes: {
 				currentModeId: "agent",
 				availableModes: [
@@ -227,6 +262,10 @@ function createLoggedOutAgentTestHarness() {
 async function startNativeBackend(agent: CursorAcpAgent, sessionId: string): Promise<void> {
 	const session = (agent as any).sessions[sessionId];
 	await (agent as any).ensureBackend(session);
+}
+
+async function waitForScheduledUpdates(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 const originalCursorAcpConfigDir = process.env.CURSOR_ACP_CONFIG_DIR;
@@ -510,7 +549,7 @@ describe("CursorAcpAgent", () => {
 		expect(client.permissionCalls).toHaveLength(1);
 	});
 
-	it("auto-approves permission requests in autoRunAllCommands mode", async () => {
+	it("auto-approves permission requests in yolo mode", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
 		await agent.initialize({
@@ -524,7 +563,7 @@ describe("CursorAcpAgent", () => {
 		await startNativeBackend(agent, session.sessionId);
 		await agent.setSessionMode({
 			sessionId: session.sessionId,
-			modeId: "autoRunAllCommands",
+			modeId: "yolo",
 		} as any);
 
 		backends[0]!.promptHandler = async () => {
@@ -612,6 +651,44 @@ describe("CursorAcpAgent", () => {
 		expect(backends[1]!.options.modelId).toBe("gpt-5.2");
 	});
 
+	it("rejects a second prompt while one is in progress", async () => {
+		const { agent, backends } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+		await startNativeBackend(agent, session.sessionId);
+
+		let resolvePrompt: (() => void) | undefined;
+		backends[0]!.promptHandler = async () =>
+			await new Promise<{ stopReason: "end_turn" }>((resolve) => {
+				resolvePrompt = () => resolve({ stopReason: "end_turn" });
+			});
+
+		const first = agent.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "run something" }],
+		} as any);
+		while (backends[0]!.promptCalls.length === 0) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		await expect(
+			agent.prompt({
+				sessionId: session.sessionId,
+				prompt: [{ type: "text", text: "second" }],
+			} as any),
+		).rejects.toThrow(/another prompt is in progress/);
+
+		resolvePrompt?.();
+		await first;
+	});
+
 	it("rejects model changes while a prompt is active", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
@@ -669,8 +746,83 @@ describe("CursorAcpAgent", () => {
 				cwd: "/tmp/project",
 				mcpServers: [],
 			} as any);
+			await waitForScheduledUpdates();
 
 			expect(backends).toHaveLength(0);
+			expect(
+				client.updates.filter((u) => u.update?.sessionUpdate === "user_message_chunk"),
+			).toHaveLength(1);
+			expect(
+				client.updates.filter((u) => u.update?.sessionUpdate === "agent_message_chunk"),
+			).toHaveLength(1);
+		} finally {
+			delete process.env.CURSOR_ACP_CONFIG_DIR;
+			await rm(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("replays stored history after native session/load when a backend session id is stored", async () => {
+		const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-"));
+		process.env.CURSOR_ACP_CONFIG_DIR = tempRoot;
+
+		try {
+			const { agent, backends, client } = createAgentTestHarness();
+
+			await recordUserMessage("/tmp/project", "session-1", "hello");
+			await recordAssistantMessage("/tmp/project", "session-1", "world");
+			await recordSessionMeta("/tmp/project", "session-1", "be-native-1");
+
+			await agent.initialize({
+				protocolVersion: 1,
+				clientCapabilities: {},
+			} as any);
+			await agent.unstable_resumeSession({
+				sessionId: "session-1",
+				cwd: "/tmp/project",
+				mcpServers: [],
+			} as any);
+			await waitForScheduledUpdates();
+
+			expect(backends).toHaveLength(1);
+			expect(backends[0]!.loadCalls).toEqual(["be-native-1"]);
+			expect(backends[0]!.createCalls).toBe(0);
+			expect(
+				client.updates.filter((u) => u.update?.sessionUpdate === "user_message_chunk"),
+			).toHaveLength(1);
+			expect(
+				client.updates.filter((u) => u.update?.sessionUpdate === "agent_message_chunk"),
+			).toHaveLength(1);
+		} finally {
+			delete process.env.CURSOR_ACP_CONFIG_DIR;
+			await rm(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("replays stored history for stable loadSession after native session/load", async () => {
+		const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-"));
+		process.env.CURSOR_ACP_CONFIG_DIR = tempRoot;
+
+		try {
+			const { agent, backends, client } = createAgentTestHarness();
+
+			await recordUserMessage("/tmp/project", "session-1", "hello");
+			await recordAssistantMessage("/tmp/project", "session-1", "world");
+			await recordSessionMeta("/tmp/project", "session-1", "be-native-1");
+
+			await agent.initialize({
+				protocolVersion: 1,
+				clientCapabilities: {},
+			} as any);
+			const response = await agent.loadSession({
+				sessionId: "session-1",
+				cwd: "/tmp/project",
+				mcpServers: [],
+			} as any);
+			await waitForScheduledUpdates();
+
+			expect(backends).toHaveLength(1);
+			expect(backends[0]!.loadCalls).toEqual(["be-native-1"]);
+			expect(response.models?.currentModelId).toBe("gpt-5.2");
 			expect(
 				client.updates.filter((u) => u.update?.sessionUpdate === "user_message_chunk"),
 			).toHaveLength(1);

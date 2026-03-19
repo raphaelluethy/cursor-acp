@@ -31,13 +31,32 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - **Model listing and best-effort model selection**: Keeps `/model` support while native ACP has no stable model API
 - **Authentication helpers**: `/login`, `/logout`, `/status`, plus terminal-auth metadata for ACP clients that support it
 - **Prompt flattening for ACP clients**: Keeps embedded context and image prompts working by converting them to text before forwarding to native ACP
-- **Optional Auto Run All Commands mode**: Auto-approves native ACP permission requests when explicitly selected
+- **Optional Yolo mode** (`yolo`): Auto-approves native ACP permission requests when explicitly selected
 
 ### Known limitations
 
 - Native Cursor ACP on the currently validated CLI does **not** expose `session/list`, `session/resume`, or `session/set_model`
-- Resuming after restarting `cursor-acp` replays visible history, but may not preserve native Cursor backend state
+- Resuming after restarting `cursor-acp` uses native `session/load` when a stored `backendSessionId` is available; if that fails, the adapter starts a **new** native session and replays local JSONL so visible history is preserved
 - `debug` mode is intentionally not exposed in this phase
+
+## Breaking changes (native ACP & Yolo)
+
+If you used an older `cursor-acp` that drove Cursor through the legacy **`agent --print --output-format stream-json`** path, upgrading changes behavior in ways that are easy to mistake for “bugs” unless you know what moved:
+
+### Native `agent acp` backend
+
+- **Execution model**: The adapter now spawns **native `agent acp`** and speaks ACP to Cursor’s server. Session traffic, slash-command routing, and tool permission flows follow **native ACP**, not the previous wrapper-only protocol.
+- **Slash commands**: If Cursor advertises a command name that matches a built-in wrapper command (for example `/model`), the **native command wins** and is forwarded to the backend; the wrapper no longer always intercepts those names.
+- **Permissions**: Tool and action approval is mediated through **native `requestPermission`** notifications. The adapter translates them to the outer ACP client unless you opt into Yolo (below).
+- **Resume / listing**: Resume uses native **`session/load`** when a stored backend session id is available; native Cursor ACP still does not expose everything the outer protocol can represent (see **Known limitations**). Expect differences versus the old stream-json session lifecycle.
+
+### Yolo mode (`yolo`)
+
+- **What it does now**: **Yolo** only changes how the adapter answers **native ACP permission requests**—it auto-selects an allow-style option (preferring `allow_always`, then `allow_once`, then another allow). It does **not** introduce a separate native Cursor mode: both **Default** and **Yolo** map to native **`agent`**; the difference is whether permissions are surfaced to your client or approved inside the adapter.
+- **Why that can break expectations**: If you relied on the old wrapper’s auto-approval semantics (or on names like `bypassPermissions` / `autoRunAllCommands`) as identical to “unrestricted agent” in the legacy path, behavior may differ because approvals are now tied to **native permission options** and to the **ACP permission** channel.
+- **Configuration**: Aliases such as `bypassPermissions` → `yolo` remain supported; see **Migration Notes**. You must still set `default_mode` / `CURSOR_ACP_DEFAULT_MODE` to `yolo` (or pick **Yolo** in the client) to get automatic approval.
+
+The same notice is linked from [`docs/breaking-changes.md`](docs/breaking-changes.md).
 
 ## Slash Commands
 
@@ -134,32 +153,32 @@ If `cursor-acp` is not on your PATH, use the full absolute path to the entry poi
 }
 ```
 
-#### Environment Variables
+#### Default mode and model
 
-You can optionally set default mode and model via environment variables in the `"env"` object:
-
-- `CURSOR_ACP_DEFAULT_MODE` — one of `default`, `autoRunAllCommands`, `plan`, or `ask`
-- Legacy aliases are still accepted: `acceptEdits` -> `default`, `bypassPermissions` -> `autoRunAllCommands`
-- `CURSOR_ACP_DEFAULT_MODEL` — a model ID string (e.g. the model ID shown by `/model`)
-
-Example with defaults configured:
+**Config file (recommended):** create `~/.cursor-acp/config.json` (or `$CURSOR_ACP_CONFIG_DIR/config.json`):
 
 ```json
 {
-  "agent_servers": {
-    "Cursor": {
-      "type": "custom",
-      "command": "cursor-acp",
-      "args": [],
-      "env": {
-        "CURSOR_ACP_DEFAULT_MODE": "autoRunAllCommands"
-      }
-    }
-  }
+  "default_mode": "yolo",
+  "default_model": "your-model-id"
 }
 ```
 
-Recommended Zed setup if you want tools to run without repeated approval prompts:
+- `default_mode` — one of `default`, `yolo`, `plan`, or `ask` (legacy aliases: `acceptEdits` → `default`, `bypassPermissions` / `autoRunAllCommands` → `yolo`)
+- `default_model` — optional model ID (e.g. the model ID shown by `/model`)
+
+Omit keys you do not need. Environment variables below override the file when set.
+
+The mode picker in Zed (and other ACP clients) lists **Default**, **Yolo**, **Ask**, and **Plan** — including **Yolo**, which is implemented only in this adapter (Cursor’s native session still uses its usual Agent/Plan/Ask wiring under the hood).
+
+#### Environment Variables
+
+You can alternatively set defaults via environment variables in the `"env"` object (or your shell):
+
+- `CURSOR_ACP_DEFAULT_MODE` — same values as `default_mode` in the config file
+- `CURSOR_ACP_DEFAULT_MODEL` — same as `default_model` in the config file
+
+Example using env only:
 
 ```json
 {
@@ -169,7 +188,7 @@ Recommended Zed setup if you want tools to run without repeated approval prompts
       "command": "cursor-acp",
       "args": [],
       "env": {
-        "CURSOR_ACP_DEFAULT_MODE": "autoRunAllCommands"
+        "CURSOR_ACP_DEFAULT_MODE": "yolo"
       }
     }
   }
@@ -181,7 +200,7 @@ Recommended Zed setup if you want tools to run without repeated approval prompts
 1. Open the Agent Panel with `Cmd+?` (macOS) or `Ctrl+?` (Linux)
 2. Click the `+` button in the top right and select **Cursor**
 3. On first use, run the `/login` slash command to authenticate with Cursor
-4. The default mode is `default`; if you want tool execution without repeated prompts, set `CURSOR_ACP_DEFAULT_MODE=autoRunAllCommands`
+4. The default mode is `default`; if you want tool execution without repeated prompts, set `"default_mode": "yolo"` in `~/.cursor-acp/config.json` or `CURSOR_ACP_DEFAULT_MODE=yolo`
 
 You can also bind a keyboard shortcut to quickly open a new Cursor thread by adding the following to your `keymap.json` (open via `zed: open keymap file`):
 
@@ -223,8 +242,9 @@ bun run check       # Run lint and format checks
 
 ## Migration Notes
 
-- `default`, `autoRunAllCommands`, `ask`, and `plan` are the advertised modes
-- `acceptEdits` and `bypassPermissions` are deprecated aliases
+- See **Breaking changes (native ACP & Yolo)** for semantic and protocol differences when upgrading from the legacy stream-json wrapper.
+- `default`, `yolo`, `ask`, and `plan` are the advertised modes
+- `acceptEdits`, `bypassPermissions`, and `autoRunAllCommands` are deprecated aliases (still accepted; map to `default` / `yolo` as documented under **Default mode and model**)
 - `debug` is not exposed
 - Custom commands and skills are forwarded from native `agent acp`
 

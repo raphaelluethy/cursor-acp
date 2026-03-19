@@ -3,6 +3,7 @@ import {
 	Client,
 	ClientCapabilities,
 	ClientSideConnection,
+	LoadSessionResponse,
 	NewSessionRequest,
 	NewSessionResponse,
 	PromptRequest,
@@ -55,6 +56,7 @@ export interface NativeSessionBackend {
 	cancel(): Promise<void>;
 	close(): Promise<void>;
 	createSessionBackend(): Promise<NewSessionResponse>;
+	loadSessionBackend(nativeSessionId: string): Promise<LoadSessionResponse>;
 	prompt(promptText: string): Promise<PromptResponse>;
 	restartBackend(): Promise<NewSessionResponse>;
 	setNativeMode(modeId: NativeModeId): Promise<SetSessionModeResponse | void>;
@@ -143,6 +145,19 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 			mcpServers: this.options.mcpServers ?? [],
 		});
 		this.nativeSessionId = response.sessionId;
+		return response;
+	}
+
+	async loadSessionBackend(nativeSessionId: string): Promise<LoadSessionResponse> {
+		await this.ensureStarted();
+		const connection = this.requireConnection();
+
+		const response = await connection.loadSession({
+			sessionId: nativeSessionId,
+			cwd: this.options.cwd,
+			mcpServers: this.options.mcpServers ?? [],
+		});
+		this.nativeSessionId = nativeSessionId;
 		return response;
 	}
 
@@ -297,14 +312,7 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 
 		await connection.initialize({
 			protocolVersion: 1,
-			// Native `agent acp` currently fails `session/new` when initialized with
-			// richer client capabilities such as Zed's fs/terminal support.
-			// Keep the wrapper's full capabilities at the outer ACP boundary and use
-			// a conservative inner capability set for the native backend.
-			clientCapabilities: {
-				fs: { readTextFile: false, writeTextFile: false },
-				terminal: false,
-			},
+			clientCapabilities: this.buildInnerClientCapabilities(this.options.clientCapabilities),
 			clientInfo: {
 				name: "cursor-acp",
 				version: "native-proxy",
@@ -329,5 +337,19 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 		}
 
 		return this.nativeSessionId;
+	}
+
+	/** Mirror the outer client's fs/terminal flags so native `agent acp` can use them. */
+	private buildInnerClientCapabilities(outer?: ClientCapabilities): ClientCapabilities {
+		const fs = outer?.fs;
+		return {
+			_meta: outer?._meta,
+			auth: outer?.auth,
+			fs: {
+				readTextFile: fs?.readTextFile ?? false,
+				writeTextFile: fs?.writeTextFile ?? false,
+			},
+			terminal: outer?.terminal ?? false,
+		};
 	}
 }
