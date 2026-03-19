@@ -9,8 +9,6 @@ export const ADVERTISED_MODE_IDS = ["default", "yolo", "ask", "plan"] as const;
 
 export const LEGACY_MODE_ALIASES = {
 	acceptEdits: "default",
-	bypassPermissions: "yolo",
-	autoRunAllCommands: "yolo",
 	agent: "default",
 } as const;
 
@@ -65,11 +63,6 @@ export function modeDisplayName(modeId: SessionModeId): string {
 }
 
 export function parseDefaultMode(): SessionModeId {
-	const value = process.env.CURSOR_ACP_DEFAULT_MODE;
-	if (value) {
-		return normalizeModeId(value) ?? DEFAULT_MODE_ID;
-	}
-
 	const fromFile = readUserConfigFile().default_mode;
 	if (typeof fromFile === "string") {
 		const trimmed = fromFile.trim();
@@ -82,12 +75,6 @@ export function parseDefaultMode(): SessionModeId {
 }
 
 export function parseDefaultModel(): string | undefined {
-	const value = process.env.CURSOR_ACP_DEFAULT_MODEL;
-	if (value) {
-		const trimmed = value.trim();
-		return trimmed.length > 0 ? trimmed : undefined;
-	}
-
 	const fromFile = readUserConfigFile().default_model;
 	if (typeof fromFile === "string") {
 		const trimmed = fromFile.trim();

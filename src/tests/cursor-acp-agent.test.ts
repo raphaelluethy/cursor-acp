@@ -281,8 +281,6 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-	delete process.env.CURSOR_ACP_DEFAULT_MODE;
-	delete process.env.CURSOR_ACP_DEFAULT_MODEL;
 	if (originalCursorAcpConfigDir) {
 		process.env.CURSOR_ACP_CONFIG_DIR = originalCursorAcpConfigDir;
 	} else {
@@ -513,7 +511,6 @@ describe("CursorAcpAgent", () => {
 	});
 
 	it("forwards permission requests in default mode", async () => {
-		process.env.CURSOR_ACP_DEFAULT_MODE = "default";
 		const { agent, backends, client } = createAgentTestHarness();
 
 		await agent.initialize({

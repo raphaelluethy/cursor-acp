@@ -65,7 +65,7 @@ describe("slash commands", () => {
 		expect(session.modeId).toBe("yolo");
 	});
 
-	it("keeps bypassPermissions as a legacy /mode alias", async () => {
+	it("rejects legacy yolo alias names for /mode", async () => {
 		const session = { modelId: "auto", modeId: "default" as const };
 		const result = await handleSlashCommand("mode", "bypassPermissions", {
 			session,
@@ -74,8 +74,8 @@ describe("slash commands", () => {
 		});
 
 		expect(result.handled).toBe(true);
-		expect(result.responseText).toContain("Mode set to Yolo");
-		expect(session.modeId).toBe("yolo");
+		expect(result.responseText).toContain("Unknown mode");
+		expect(session.modeId).toBe("default");
 	});
 
 	it("prefers native command metadata over built-in command metadata", () => {
