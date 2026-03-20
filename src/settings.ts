@@ -1,8 +1,3 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
-
-import { getCursorAcpConfigDir } from "./session-storage.js";
-
 export const ADAPTER_NAME = "cursor-acp";
 
 export const ADVERTISED_MODE_IDS = ["default", "yolo", "ask", "plan"] as const;
@@ -15,26 +10,6 @@ export const LEGACY_MODE_ALIASES = {
 export type SessionModeId = (typeof ADVERTISED_MODE_IDS)[number];
 
 export const DEFAULT_MODE_ID: SessionModeId = "default";
-
-/** Optional `~/.cursor-acp/config.json` (or `$CURSOR_ACP_CONFIG_DIR/config.json`) fields. */
-export interface CursorAcpUserConfigFile {
-	default_mode?: string;
-	default_model?: string;
-}
-
-function readUserConfigFile(): CursorAcpUserConfigFile {
-	const configPath = path.join(getCursorAcpConfigDir(), "config.json");
-	try {
-		const raw = fs.readFileSync(configPath, "utf-8");
-		const parsed = JSON.parse(raw) as unknown;
-		if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-			return parsed as CursorAcpUserConfigFile;
-		}
-	} catch {
-		// missing or invalid
-	}
-	return {};
-}
 
 export function normalizeModeId(value: string): SessionModeId | null {
 	if (ADVERTISED_MODE_IDS.includes(value as SessionModeId)) {
@@ -60,28 +35,6 @@ export function modeDisplayName(modeId: SessionModeId): string {
 		case "plan":
 			return "Plan";
 	}
-}
-
-export function parseDefaultMode(): SessionModeId {
-	const fromFile = readUserConfigFile().default_mode;
-	if (typeof fromFile === "string") {
-		const trimmed = fromFile.trim();
-		if (trimmed.length > 0) {
-			return normalizeModeId(trimmed) ?? DEFAULT_MODE_ID;
-		}
-	}
-
-	return DEFAULT_MODE_ID;
-}
-
-export function parseDefaultModel(): string | undefined {
-	const fromFile = readUserConfigFile().default_model;
-	if (typeof fromFile === "string") {
-		const trimmed = fromFile.trim();
-		return trimmed.length > 0 ? trimmed : undefined;
-	}
-
-	return undefined;
 }
 
 export function availableModes(currentModeId: SessionModeId) {

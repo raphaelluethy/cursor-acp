@@ -51,8 +51,6 @@ import {
 	availableModes,
 	DEFAULT_MODE_ID,
 	normalizeModeId,
-	parseDefaultMode,
-	parseDefaultModel,
 	SessionModeId,
 } from "./settings.js";
 import {
@@ -184,6 +182,8 @@ export class CursorAcpAgent implements Agent {
 			sessionId,
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
+			preferredModeId: this.extractRequestedInitialMode(params),
+			preferredModelId: this.extractRequestedInitialModel(params),
 		});
 	}
 
@@ -494,14 +494,16 @@ export class CursorAcpAgent implements Agent {
 		sessionId: string;
 		cwd: string;
 		mcpServers?: NewSessionRequest["mcpServers"];
+		preferredModeId?: SessionModeId;
+		preferredModelId?: string;
 	}): Promise<NewSessionResponse> {
-		const modeId = parseDefaultMode() ?? DEFAULT_MODE_ID;
+		const modeId = params.preferredModeId ?? DEFAULT_MODE_ID;
 		const session: SessionState = {
 			sessionId: params.sessionId,
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
 			modeId,
-			modelId: parseDefaultModel(),
+			modelId: params.preferredModelId,
 			lastAgentModeId: modeId === "yolo" ? "yolo" : "default",
 			cancelled: false,
 			nativeAvailableCommands: [],
@@ -522,6 +524,90 @@ export class CursorAcpAgent implements Agent {
 			models,
 			modes: availableModes(session.modeId),
 		};
+	}
+
+	private extractRequestedInitialMode(params: NewSessionRequest): SessionModeId | undefined {
+		const raw = params as unknown as {
+			modeId?: unknown;
+			mode_id?: unknown;
+			mode?: unknown;
+			defaultModeId?: unknown;
+			default_mode?: unknown;
+			_meta?: {
+				modeId?: unknown;
+				mode_id?: unknown;
+				mode?: unknown;
+				defaultModeId?: unknown;
+				default_mode?: unknown;
+			};
+		};
+
+		const candidates = [
+			raw.modeId,
+			raw.mode_id,
+			raw.mode,
+			raw.defaultModeId,
+			raw.default_mode,
+			raw._meta?.modeId,
+			raw._meta?.mode_id,
+			raw._meta?.mode,
+			raw._meta?.defaultModeId,
+			raw._meta?.default_mode,
+		];
+
+		for (const candidate of candidates) {
+			if (typeof candidate !== "string") {
+				continue;
+			}
+			const normalized = normalizeModeId(candidate.trim());
+			if (normalized) {
+				return normalized;
+			}
+		}
+
+		return undefined;
+	}
+
+	private extractRequestedInitialModel(params: NewSessionRequest): string | undefined {
+		const raw = params as unknown as {
+			modelId?: unknown;
+			model_id?: unknown;
+			model?: unknown;
+			defaultModelId?: unknown;
+			default_model?: unknown;
+			_meta?: {
+				modelId?: unknown;
+				model_id?: unknown;
+				model?: unknown;
+				defaultModelId?: unknown;
+				default_model?: unknown;
+			};
+		};
+
+		const candidates = [
+			raw.modelId,
+			raw.model_id,
+			raw.model,
+			raw.defaultModelId,
+			raw.default_model,
+			raw._meta?.modelId,
+			raw._meta?.model_id,
+			raw._meta?.model,
+			raw._meta?.defaultModelId,
+			raw._meta?.default_model,
+		];
+
+		for (const candidate of candidates) {
+			if (typeof candidate !== "string") {
+				continue;
+			}
+			const trimmed = candidate.trim();
+			if (trimmed.length > 0) {
+				return trimmed;
+			}
+		}
+
+		return undefined;
 	}
 
 	private async createBackend(

@@ -45,7 +45,7 @@ If you used an older `cursor-acp` that drove Cursor through the legacy **`agent 
 
 ### Configuration env vars removed
 
-Earlier releases documented `CURSOR_ACP_DEFAULT_MODE` and `CURSOR_ACP_DEFAULT_MODEL`. Those environment variables are **no longer read**. Set `default_mode` and `default_model` in `~/.cursor-acp/config.json` (see **Default mode and model**) instead.
+Earlier releases documented `CURSOR_ACP_DEFAULT_MODE` and `CURSOR_ACP_DEFAULT_MODEL`. Those environment variables are **no longer read**. Defaults now come from the ACP client’s `session/new` request, for example Zed’s inline `default_mode` / `default_model` fields on the custom agent entry.
 
 ### Legacy Yolo mode name aliases removed
 
@@ -62,7 +62,7 @@ Older builds accepted `bypassPermissions` and `autoRunAllCommands` as synonyms f
 
 - **What it does now**: **Yolo** only changes how the adapter answers **native ACP permission requests**—it auto-selects an allow-style option (preferring `allow_always`, then `allow_once`, then another allow). It does **not** introduce a separate native Cursor mode: both **Default** and **Yolo** map to native **`agent`**; the difference is whether permissions are surfaced to your client or approved inside the adapter.
 - **Why that can break expectations**: If you relied on the old wrapper’s auto-approval semantics (or on names like `bypassPermissions` / `autoRunAllCommands`) as identical to “unrestricted agent” in the legacy path, behavior may differ because approvals are now tied to **native permission options** and to the **ACP permission** channel.
-- **Configuration**: Set `default_mode` to **`yolo`** in `config.json` (or pick **Yolo** in the client) to get automatic approval. Do not use legacy names like `bypassPermissions` or `autoRunAllCommands`; see **Legacy Yolo mode name aliases removed**.
+- **Configuration**: Set `default_mode` to **`yolo`** in your ACP client configuration (for example the Zed custom agent entry) to get automatic approval. Do not use legacy names like `bypassPermissions` or `autoRunAllCommands`; see **Legacy Yolo mode name aliases removed**.
 
 The same notice is linked from [`docs/breaking-changes.md`](docs/breaking-changes.md).
 
@@ -139,7 +139,8 @@ Open your Zed settings file via the Command Palette (`zed: open settings`) and a
     "Cursor": {
       "type": "custom",
       "command": "cursor-acp",
-      "args": []
+      "args": [],
+      "default_mode": "yolo"
     }
   }
 }
@@ -153,7 +154,8 @@ If `cursor-acp` is not on your PATH, use the full absolute path to the entry poi
     "Cursor": {
       "type": "custom",
       "command": "/absolute/path/to/cursor-acp/dist/index.js",
-      "args": []
+      "args": [],
+      "default_mode": "yolo"
     }
   }
 }
@@ -161,19 +163,26 @@ If `cursor-acp` is not on your PATH, use the full absolute path to the entry poi
 
 #### Default mode and model
 
-**Config file (recommended):** create `~/.cursor-acp/config.json` (or `$CURSOR_ACP_CONFIG_DIR/config.json`):
+Zed can pass the initial mode and model through the ACP `session/new` request. Put them directly on the custom agent entry:
 
 ```json
 {
-  "default_mode": "yolo",
-  "default_model": "your-model-id"
+  "agent_servers": {
+    "Cursor": {
+      "type": "custom",
+      "command": "cursor-acp",
+      "args": [],
+      "default_mode": "yolo",
+      "default_model": "gpt-5.4-mini-medium"
+    }
+  }
 }
 ```
 
 - `default_mode` — one of `default`, `yolo`, `plan`, or `ask` (legacy alias: `acceptEdits` → `default`)
-- `default_model` — optional model ID (e.g. one of the model IDs shown by `/model`)
+- `default_model` — optional model ID forwarded from the ACP client when supported
 
-Omit keys you do not need.
+Omit keys you do not need. There is no separate adapter-specific config file for these defaults anymore.
 
 The mode picker in Zed (and other ACP clients) lists **Default**, **Yolo**, **Ask**, and **Plan** — including **Yolo**, which is implemented only in this adapter (Cursor’s native session still uses its usual Agent/Plan/Ask wiring under the hood).
 
@@ -182,7 +191,7 @@ The mode picker in Zed (and other ACP clients) lists **Default**, **Yolo**, **As
 1. Open the Agent Panel with `Cmd+?` (macOS) or `Ctrl+?` (Linux)
 2. Click the `+` button in the top right and select **Cursor**
 3. On first use, run the `/login` slash command to authenticate with Cursor
-4. The default mode is `default`; if you want tool execution without repeated prompts, set `"default_mode": "yolo"` in `~/.cursor-acp/config.json`
+4. The default mode is `default`; if you want tool execution without repeated prompts, set `"default_mode": "yolo"` on the Zed agent entry
 
 You can also bind a keyboard shortcut to quickly open a new Cursor thread by adding the following to your `keymap.json` (open via `zed: open keymap file`):
 
@@ -241,7 +250,7 @@ src/
 ├── cursor-cli-runner.ts  # Cursor CLI helpers (model listing)
 ├── prompt-conversion.ts  # Flattens ACP prompts for native ACP forwarding
 ├── auth.ts               # Authentication handling
-├── settings.ts           # Configuration management
+├── settings.ts           # Mode ids and normalization helpers
 ├── session-storage.ts    # Session persistence and history replay
 ├── slash-commands.ts     # Slash command handlers
 ├── tools.ts              # Tool definitions

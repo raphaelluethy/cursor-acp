@@ -482,6 +482,126 @@ describe("CursorAcpAgent", () => {
 		expect(session.modes?.currentModeId).toBe("default");
 	});
 
+	it("honors requested yolo mode when creating a new session", async () => {
+		const { agent, backends, client } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+			modeId: "yolo",
+		} as any);
+
+		expect(session.modes?.currentModeId).toBe("yolo");
+
+		await startNativeBackend(agent, session.sessionId);
+		backends[0]!.promptHandler = async () => {
+			const response = await backends[0]!.callbacks.onRequestPermission({
+				sessionId: backends[0]!.nativeSessionId!,
+				options: [
+					{
+						optionId: "allow-always",
+						kind: "allow_always",
+						name: "Always allow",
+					},
+				],
+				toolCall: {
+					toolCallId: "t1",
+					title: "`pwd`",
+					rawInput: { command: "pwd" },
+				},
+			} as any);
+			expect(response).toMatchObject({
+				outcome: {
+					outcome: "selected",
+					optionId: "allow-always",
+				},
+			});
+			return { stopReason: "end_turn" };
+		};
+
+		await agent.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "run pwd" }],
+		} as any);
+
+		expect(client.permissionCalls).toHaveLength(0);
+	});
+
+	it("accepts snake_case default_mode from ACP clients", async () => {
+		const { agent, backends, client } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+			default_mode: "yolo",
+		} as any);
+
+		expect(session.modes?.currentModeId).toBe("yolo");
+
+		await startNativeBackend(agent, session.sessionId);
+		backends[0]!.promptHandler = async () => {
+			const response = await backends[0]!.callbacks.onRequestPermission({
+				sessionId: backends[0]!.nativeSessionId!,
+				options: [
+					{
+						optionId: "allow-always",
+						kind: "allow_always",
+						name: "Always allow",
+					},
+				],
+				toolCall: {
+					toolCallId: "t1",
+					title: "`pwd`",
+					rawInput: { command: "pwd" },
+				},
+			} as any);
+			expect(response).toMatchObject({
+				outcome: {
+					outcome: "selected",
+					optionId: "allow-always",
+				},
+			});
+			return { stopReason: "end_turn" };
+		};
+
+		await agent.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "run pwd" }],
+		} as any);
+
+		expect(client.permissionCalls).toHaveLength(0);
+	});
+
+	it("accepts snake_case default_model from ACP clients", async () => {
+		const { agent, backends } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+			default_model: "gpt-5.2",
+		} as any);
+
+		expect(session.models?.currentModelId).toBe("gpt-5.2");
+
+		await startNativeBackend(agent, session.sessionId);
+		expect(backends[0]!.options.modelId).toBe("gpt-5.2");
+	});
+
 	it("does not start the native backend when changing mode before first prompt", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
