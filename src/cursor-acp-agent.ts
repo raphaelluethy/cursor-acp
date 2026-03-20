@@ -576,7 +576,7 @@ export class CursorAcpAgent implements Agent {
 			try {
 				const loaded = await nativeClient.loadSessionBackend(loadId);
 				session.backendSessionId = loadId;
-				this.applyNativeSessionModelsAndModes(session, loaded);
+				await this.applyNativeSessionModelsAndModes(session, loaded);
 				session.nativeLoadSucceeded = true;
 			} catch (error) {
 				this.logger.warn?.(
@@ -586,12 +586,12 @@ export class CursorAcpAgent implements Agent {
 				session.nativeLoadSucceeded = false;
 				const response = await nativeClient.createSessionBackend();
 				session.backendSessionId = response.sessionId;
-				this.applyNativeSessionModelsAndModes(session, response);
+				await this.applyNativeSessionModelsAndModes(session, response);
 			}
 		} else {
 			const response = await nativeClient.createSessionBackend();
 			session.backendSessionId = response.sessionId;
-			this.applyNativeSessionModelsAndModes(session, response);
+			await this.applyNativeSessionModelsAndModes(session, response);
 		}
 
 		try {
@@ -603,17 +603,61 @@ export class CursorAcpAgent implements Agent {
 		await this.applyNativeModeAfterConnect(session, nativeClient);
 	}
 
-	private applyNativeSessionModelsAndModes(
+	private async applyNativeSessionModelsAndModes(
 		session: SessionState,
 		loaded: {
 			models?: NewSessionResponse["models"];
 			modes?: NewSessionResponse["modes"];
 		},
-	): void {
+	): Promise<void> {
 		if (loaded.models) {
-			session.nativeSessionModels = loaded.models;
-			if (loaded.models.currentModelId) {
-				session.modelId = loaded.models.currentModelId;
+			let listedModels: CursorModelDescriptor[] = [];
+			try {
+				listedModels = await this.runner.listModels();
+			} catch (error) {
+				this.logger.warn?.(
+					"[cursor-acp] Unable to refresh full model list from CLI",
+					error,
+				);
+			}
+
+			const merged = new Map<
+				string,
+				{ modelId: string; name: string; description: string }
+			>();
+
+			for (const model of loaded.models.availableModels ?? []) {
+				merged.set(model.modelId, {
+					modelId: model.modelId,
+					name: this.modelDisplayName(model.modelId, model.name),
+					description: this.modelHoverDescription(
+						model.modelId,
+						model.description ?? model.name,
+					),
+				});
+			}
+
+			for (const model of listedModels) {
+				merged.set(model.modelId, {
+					modelId: model.modelId,
+					name: this.modelDisplayName(model.modelId, model.name),
+					description: this.modelHoverDescription(model.modelId, model.name),
+				});
+			}
+
+			const currentModelId =
+				loaded.models.currentModelId ??
+				listedModels.find((model) => model.current)?.modelId ??
+				session.modelId ??
+				[...merged.keys()][0];
+
+			session.nativeSessionModels = {
+				...loaded.models,
+				currentModelId,
+				availableModels: [...merged.values()],
+			};
+			if (currentModelId) {
+				session.modelId = currentModelId;
 			}
 		}
 
@@ -715,17 +759,28 @@ export class CursorAcpAgent implements Agent {
 		const availableModels = listed.map((model) => ({
 			modelId: model.modelId,
 			name: model.name,
-			description: model.name,
+			description: this.modelHoverDescription(model.modelId, model.name),
 		}));
 
-		if (!session.modelId) {
+		const hasSelectedModel =
+			typeof session.modelId === "string" &&
+			listed.some((model) => model.modelId === session.modelId);
+		if (!hasSelectedModel) {
 			session.modelId = listed.find((model) => model.current)?.modelId ?? listed[0]?.modelId;
 		}
 
 		return {
 			availableModels,
-			currentModelId: session.modelId,
+			currentModelId: session.modelId ?? "auto",
 		};
+	}
+
+	private modelHoverDescription(modelId: string, baseDescription: string): string {
+		return `${baseDescription} (id: ${modelId})`;
+	}
+
+	private modelDisplayName(_modelId: string, name: string): string {
+		return name;
 	}
 
 	private async handleNativeSessionUpdate(

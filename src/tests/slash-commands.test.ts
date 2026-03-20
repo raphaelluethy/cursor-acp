@@ -52,6 +52,24 @@ describe("slash commands", () => {
 		expect(session.modelId).toBe("gpt-5.2");
 	});
 
+	it("handles /model set for fast variants", async () => {
+		const session = { modelId: "auto", modeId: "default" as const };
+		const result = await handleSlashCommand("model", "gpt-5.2-fast", {
+			session,
+			auth: mockAuth,
+			listModels: async () => [
+				{ modelId: "auto", name: "Auto" },
+				{ modelId: "auto-fast", name: "Auto (Fast)" },
+				{ modelId: "gpt-5.2", name: "GPT-5.2" },
+				{ modelId: "gpt-5.2-fast", name: "GPT-5.2 (Fast)" },
+			],
+		});
+
+		expect(result.handled).toBe(true);
+		expect(result.responseText).toContain("Model set to gpt-5.2-fast");
+		expect(session.modelId).toBe("gpt-5.2-fast");
+	});
+
 	it("handles /mode set", async () => {
 		const session = { modelId: "auto", modeId: "default" as const };
 		const result = await handleSlashCommand("mode", "yolo", {

@@ -171,7 +171,7 @@ If `cursor-acp` is not on your PATH, use the full absolute path to the entry poi
 ```
 
 - `default_mode` — one of `default`, `yolo`, `plan`, or `ask` (legacy alias: `acceptEdits` → `default`)
-- `default_model` — optional model ID (e.g. the model ID shown by `/model`)
+- `default_model` — optional model ID (e.g. one of the model IDs shown by `/model`)
 
 Omit keys you do not need.
 

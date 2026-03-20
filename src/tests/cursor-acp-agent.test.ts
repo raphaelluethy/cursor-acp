@@ -129,8 +129,16 @@ class FakeNativeBackend implements NativeSessionBackend {
 
 		return {
 			models: {
-				currentModelId: "gpt-5.2",
-				availableModels: [{ modelId: "gpt-5.2", name: "GPT-5.2", description: "GPT-5.2" }],
+				currentModelId: "gpt-5.4-medium",
+				availableModels: [
+					{ modelId: "gpt-5.4-medium", name: "GPT-5.4", description: "GPT-5.4" },
+					{
+						modelId: "gpt-5.4-medium-fast",
+						name: "GPT-5.4 Fast",
+						description: "GPT-5.4 Fast",
+					},
+					{ modelId: "gpt-5.2", name: "GPT-5.2", description: "GPT-5.2" },
+				],
 			},
 			modes: {
 				currentModeId: "agent",
@@ -215,7 +223,10 @@ function createAgentTestHarness() {
 			async listModels() {
 				return [
 					{ modelId: "auto", name: "Auto", current: true },
+					{ modelId: "gpt-5.4-medium", name: "GPT-5.4" },
+					{ modelId: "gpt-5.4-medium-fast", name: "GPT-5.4 Fast" },
 					{ modelId: "gpt-5.2", name: "GPT-5.2" },
+					{ modelId: "claude-4.5-opus-high", name: "Opus 4.5" },
 				];
 			},
 		} as any,
@@ -432,6 +443,29 @@ describe("CursorAcpAgent", () => {
 		expect(backends).toHaveLength(0);
 	});
 
+	it("exposes listed models in newSession model listing", async () => {
+		const { agent } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+
+		expect(session.models?.currentModelId).toBe("auto");
+		expect(session.models?.availableModels.map((model) => model.modelId)).toEqual([
+			"auto",
+			"gpt-5.4-medium",
+			"gpt-5.4-medium-fast",
+			"gpt-5.2",
+			"claude-4.5-opus-high",
+		]);
+	});
+
 	it("uses default mode by default", async () => {
 		const { agent } = createAgentTestHarness();
 
@@ -500,7 +534,7 @@ describe("CursorAcpAgent", () => {
 
 		const response = await agent.prompt({
 			sessionId: session.sessionId,
-			prompt: [{ type: "text", text: "/model gpt-5.2" }],
+			prompt: [{ type: "text", text: "/model gpt-5.4-medium" }],
 		} as any);
 
 		expect(response.stopReason).toBe("end_turn");
@@ -508,6 +542,33 @@ describe("CursorAcpAgent", () => {
 		expect(recordSpy).not.toHaveBeenCalled();
 
 		recordSpy.mockRestore();
+	});
+
+	it("accepts /model fast variants before first prompt without backend restart", async () => {
+		const { agent, backends } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+
+		const restartSpy = vi.spyOn(agent as any, "restartBackend");
+
+		const response = await agent.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "/model gpt-5.4-medium-fast" }],
+		} as any);
+
+		expect(response.stopReason).toBe("end_turn");
+		expect(backends).toHaveLength(0);
+		expect(restartSpy).not.toHaveBeenCalled();
+		expect((agent as any).sessions[session.sessionId]?.modelId).toBe("gpt-5.4-medium-fast");
+
+		restartSpy.mockRestore();
 	});
 
 	it("forwards permission requests in default mode", async () => {
@@ -644,12 +705,35 @@ describe("CursorAcpAgent", () => {
 
 		await agent.unstable_setSessionModel({
 			sessionId: session.sessionId,
-			modelId: "gpt-5.2",
+			modelId: "gpt-5.4-medium",
 		} as any);
 
 		expect(backends).toHaveLength(2);
 		expect(backends[0]!.closeCalls).toBe(1);
-		expect(backends[1]!.options.modelId).toBe("gpt-5.2");
+		expect(backends[1]!.options.modelId).toBe("gpt-5.4-medium");
+	});
+
+	it("passes fast model ids through to native backend restart", async () => {
+		const { agent, backends } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+		await startNativeBackend(agent, session.sessionId);
+
+		await agent.unstable_setSessionModel({
+			sessionId: session.sessionId,
+			modelId: "gpt-5.4-medium-fast",
+		} as any);
+
+		expect(backends).toHaveLength(2);
+		expect(backends[0]!.closeCalls).toBe(1);
+		expect(backends[1]!.options.modelId).toBe("gpt-5.4-medium-fast");
 	});
 
 	it("rejects a second prompt while one is in progress", async () => {
@@ -720,7 +804,7 @@ describe("CursorAcpAgent", () => {
 		await expect(
 			agent.unstable_setSessionModel({
 				sessionId: session.sessionId,
-				modelId: "gpt-5.2",
+				modelId: "gpt-5.4-medium",
 			} as any),
 		).rejects.toThrow("Invalid params");
 
@@ -823,7 +907,14 @@ describe("CursorAcpAgent", () => {
 
 			expect(backends).toHaveLength(1);
 			expect(backends[0]!.loadCalls).toEqual(["be-native-1"]);
-			expect(response.models?.currentModelId).toBe("gpt-5.2");
+			expect(response.models?.currentModelId).toBe("gpt-5.4-medium");
+			expect(response.models?.availableModels.map((model) => model.modelId)).toEqual([
+				"gpt-5.4-medium",
+				"gpt-5.4-medium-fast",
+				"gpt-5.2",
+				"auto",
+				"claude-4.5-opus-high",
+			]);
 			expect(
 				client.updates.filter((u) => u.update?.sessionUpdate === "user_message_chunk"),
 			).toHaveLength(1);
