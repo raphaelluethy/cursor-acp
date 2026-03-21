@@ -782,6 +782,66 @@ describe("CursorAcpAgent", () => {
 		expect(client.permissionCalls).toHaveLength(0);
 	});
 
+	it("auto-approves edit-with-diff permission requests in yolo mode", async () => {
+		const { agent, backends, client } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+		await startNativeBackend(agent, session.sessionId);
+		await agent.setSessionMode({
+			sessionId: session.sessionId,
+			modeId: "yolo",
+		} as any);
+
+		backends[0]!.promptHandler = async () => {
+			const response = await backends[0]!.callbacks.onRequestPermission({
+				sessionId: backends[0]!.nativeSessionId!,
+				options: [
+					{
+						optionId: "approved",
+						kind: "allow_once",
+						name: "Yes",
+					},
+					{
+						optionId: "abort",
+						kind: "reject_once",
+						name: "No, provide feedback",
+					},
+				],
+				toolCall: {
+					toolCallId: "patch-1",
+					kind: "edit",
+					title: "Edit foo.ts",
+					content: [
+						{
+							type: "diff",
+							path: "/tmp/foo.ts",
+							oldText: "a",
+							newText: "b",
+						},
+					],
+				},
+			} as any);
+			expect(response).toMatchObject({
+				outcome: { outcome: "selected", optionId: "approved" },
+			});
+			return { stopReason: "end_turn" };
+		};
+
+		await agent.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "change foo" }],
+		} as any);
+
+		expect(client.permissionCalls).toHaveLength(0);
+	});
+
 	it("maps wrapper plan mode to native plan mode and emits updates", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 

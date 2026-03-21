@@ -47,12 +47,7 @@ import {
 	CursorModelDescriptor,
 	handleSlashCommand,
 } from "./slash-commands.js";
-import {
-	availableModes,
-	DEFAULT_MODE_ID,
-	normalizeModeId,
-	SessionModeId,
-} from "./settings.js";
+import { availableModes, DEFAULT_MODE_ID, normalizeModeId, SessionModeId } from "./settings.js";
 import {
 	findSessionFile,
 	listSessions,
@@ -62,10 +57,17 @@ import {
 	recordUserMessage,
 	replaySessionHistory,
 } from "./session-storage.js";
+import {
+	appendAssistantTextFromNativeChunk,
+	formatTurnRecapMarkdown,
+	recordTurnArtifactsFromNativeSessionUpdate,
+	type TurnArtifact,
+} from "./native-assistant-stream.js";
 import { Logger } from "./utils.js";
 
 interface ActivePromptState {
 	assistantTextChunks: string[];
+	turnArtifacts: TurnArtifact[];
 }
 
 interface SessionState {
@@ -402,7 +404,7 @@ export class CursorAcpAgent implements Agent {
 		await recordUserMessage(session.cwd, session.sessionId, promptText);
 
 		await this.ensureBackend(session);
-		session.activePrompt = { assistantTextChunks: [] };
+		session.activePrompt = { assistantTextChunks: [], turnArtifacts: [] };
 
 		try {
 			const result = await session.nativeClient!.prompt(promptText);
@@ -411,16 +413,7 @@ export class CursorAcpAgent implements Agent {
 				return { stopReason: "cancelled" };
 			}
 
-			if (
-				result.stopReason === "end_turn" &&
-				session.activePrompt.assistantTextChunks.length > 0
-			) {
-				await recordAssistantMessage(
-					session.cwd,
-					session.sessionId,
-					session.activePrompt.assistantTextChunks.join(""),
-				);
-			}
+			await this.finalizeAssistantTurnCapture(session, result);
 
 			return result;
 		} catch (error) {
@@ -869,18 +862,47 @@ export class CursorAcpAgent implements Agent {
 		return name;
 	}
 
+	private async finalizeAssistantTurnCapture(
+		session: SessionState,
+		result: PromptResponse,
+	): Promise<void> {
+		const active = session.activePrompt;
+		if (!active) {
+			return;
+		}
+		if (result.stopReason !== "end_turn") {
+			return;
+		}
+
+		let text = active.assistantTextChunks.join("");
+		if (text.trim().length === 0 && active.turnArtifacts.length > 0) {
+			text = formatTurnRecapMarkdown(active.turnArtifacts);
+			if (text.length > 0) {
+				await this.emitOrQueueNotification(session, {
+					sessionId: session.sessionId,
+					update: {
+						sessionUpdate: "agent_message_chunk",
+						content: { type: "text", text: `${text}\n` },
+					},
+				});
+			}
+		}
+
+		const trimmed = text.trim();
+		if (trimmed.length > 0) {
+			await recordAssistantMessage(session.cwd, session.sessionId, trimmed);
+		}
+	}
+
 	private async handleNativeSessionUpdate(
 		session: SessionState,
 		notification: SessionNotification,
 	): Promise<void> {
 		const update = notification.update;
 
-		if (
-			update.sessionUpdate === "agent_message_chunk" &&
-			update.content?.type === "text" &&
-			session.activePrompt
-		) {
-			session.activePrompt.assistantTextChunks.push(update.content.text);
+		if (session.activePrompt) {
+			appendAssistantTextFromNativeChunk(update, session.activePrompt.assistantTextChunks);
+			recordTurnArtifactsFromNativeSessionUpdate(session.activePrompt.turnArtifacts, update);
 		}
 
 		if (update.sessionUpdate === "current_mode_update") {

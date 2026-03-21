@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ToolCallContent } from "@agentclientprotocol/sdk";
-import { toolUpdateFromCursorToolResult } from "../tools.js";
+import { maybeDiffContentFromMutationResult, toolUpdateFromCursorToolResult } from "../tools.js";
 
 function textFromContent(content: ToolCallContent[] | undefined): string {
 	const first = content?.[0];
@@ -64,5 +64,33 @@ describe("toolUpdateFromCursorToolResult", () => {
 
 		const text = textFromContent(update.content);
 		expect(text).toContain("hi");
+	});
+
+	it("builds diff content for write tool results like edit", () => {
+		const diff = maybeDiffContentFromMutationResult(
+			{ path: "/p/x.txt" },
+			{
+				success: {
+					beforeFullFileContent: "a\n",
+					afterFullFileContent: "b\n",
+				},
+			},
+		);
+		expect(diff).toEqual([{ type: "diff", path: "/p/x.txt", oldText: "a\n", newText: "b\n" }]);
+
+		const update = toolUpdateFromCursorToolResult(
+			"writeToolCall",
+			{ path: "/p/x.txt" },
+			{
+				success: {
+					beforeFullFileContent: "old",
+					afterFullFileContent: "new",
+				},
+			},
+		);
+		expect(update.content).toEqual([
+			{ type: "diff", path: "/p/x.txt", oldText: "old", newText: "new" },
+		]);
+		expect(update.locations).toEqual([{ path: "/p/x.txt" }]);
 	});
 });

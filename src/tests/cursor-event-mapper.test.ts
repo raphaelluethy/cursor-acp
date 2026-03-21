@@ -61,6 +61,35 @@ describe("cursor event mapper", () => {
 		expect(update.content?.[0]?.content?.text).toContain("/tmp");
 	});
 
+	it("maps edit tool start to in_progress with provisional diff when args allow", () => {
+		const cache = {} as any;
+
+		const started = mapCursorEventToAcp(
+			{
+				type: "tool_call",
+				subtype: "started",
+				call_id: "edit_1",
+				tool_call: {
+					editToolCall: {
+						args: {
+							path: "/proj/a.ts",
+							old_string: "foo",
+							new_string: "bar",
+						},
+					},
+				},
+			},
+			{ sessionId: "s1", toolUseCache: cache },
+		);
+
+		const u = started.notifications[0].update as any;
+		expect(u.status).toBe("in_progress");
+		expect(u.kind).toBe("edit");
+		expect(u.content).toEqual([
+			{ type: "diff", path: "/proj/a.ts", oldText: "foo", newText: "bar" },
+		]);
+	});
+
 	it("maps todo completion to plan", () => {
 		const cache = {} as any;
 

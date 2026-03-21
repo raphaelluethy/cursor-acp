@@ -32,6 +32,7 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - **Authentication helpers**: `/login`, `/logout`, `/status`, plus terminal-auth metadata for ACP clients that support it
 - **Prompt flattening for ACP clients**: Keeps embedded context and image prompts working by converting them to text before forwarding to native ACP
 - **Optional Yolo mode** (`yolo`): Auto-approves native ACP permission requests when explicitly selected
+- **Turn closing summary**: Collects assistant text from all native `agent_message_chunk` shapes we can decode; if a turn ends with tools but no streamed assistant text, emits a Composer-style markdown recap (per-file bullets plus recent shell output) so the client can show a final message block
 
 ### Known limitations
 
@@ -254,6 +255,7 @@ src/
 ├── session-storage.ts    # Session persistence and history replay
 ├── slash-commands.ts     # Slash command handlers
 ├── tools.ts              # Tool definitions
+├── native-assistant-stream.ts # Assistant chunk parsing + end-of-turn recap
 ├── utils.ts              # Utility functions
 └── tests/                # Test files
 ```

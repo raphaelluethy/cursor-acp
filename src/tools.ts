@@ -52,7 +52,7 @@ export function extractCursorToolPayload(toolCall: unknown): CursorToolPayload |
 	};
 }
 
-function baseToolName(name: string): string {
+export function baseToolName(name: string): string {
 	return name.endsWith("ToolCall") ? name.slice(0, -"ToolCall".length) : name;
 }
 
@@ -266,7 +266,7 @@ export function toolInfoFromCursorToolCall(
 	}
 }
 
-function maybeDiffContentFromEditResult(
+export function maybeDiffContentFromMutationResult(
 	args: Record<string, unknown>,
 	result: Record<string, unknown> | undefined,
 ): ToolCallContent[] {
@@ -307,6 +307,61 @@ function maybeDiffContentFromEditResult(
 				},
 			},
 		];
+	}
+
+	return [];
+}
+
+/**
+ * When the CLI includes enough data in the tool *args* (before the result arrives),
+ * emit an ACP diff like codex-acp does on patch begin so clients can
+ * show inline diff / pending-edit UI during the turn.
+ */
+export function provisionalDiffContentFromFileToolArgs(
+	toolNameRaw: string,
+	args: Record<string, unknown>,
+): ToolCallContent[] {
+	const toolName = baseToolName(toolNameRaw);
+	const path = typeof args.path === "string" ? args.path : undefined;
+	if (!path) {
+		return [];
+	}
+
+	if (toolName === "write") {
+		const newText =
+			typeof args.contents === "string"
+				? args.contents
+				: typeof args.content === "string"
+					? args.content
+					: undefined;
+		if (newText === undefined) {
+			return [];
+		}
+		const oldText =
+			typeof args.previousContents === "string"
+				? args.previousContents
+				: typeof args.previousContent === "string"
+					? args.previousContent
+					: "";
+		return [{ type: "diff", path, oldText, newText }];
+	}
+
+	if (toolName === "edit") {
+		const oldText =
+			typeof args.old_string === "string"
+				? args.old_string
+				: typeof args.oldString === "string"
+					? args.oldString
+					: undefined;
+		const newText =
+			typeof args.new_string === "string"
+				? args.new_string
+				: typeof args.newString === "string"
+					? args.newString
+					: undefined;
+		if (oldText !== undefined && newText !== undefined) {
+			return [{ type: "diff", path, oldText, newText }];
+		}
 	}
 
 	return [];
@@ -381,8 +436,9 @@ export function toolUpdateFromCursorToolResult(
 			};
 		}
 
-		case "edit": {
-			const content = maybeDiffContentFromEditResult(args, result);
+		case "edit":
+		case "write": {
+			const content = maybeDiffContentFromMutationResult(args, result);
 			const path = typeof args.path === "string" ? args.path : undefined;
 			return {
 				content,

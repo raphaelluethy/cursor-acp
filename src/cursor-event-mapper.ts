@@ -6,7 +6,9 @@ import {
 	extractCursorToolPayload,
 	extractToolResultOutputText,
 	isRejectedToolResult,
+	baseToolName,
 	planEntriesFromCursorTodos,
+	provisionalDiffContentFromFileToolArgs,
 	toolInfoFromCursorToolCall,
 	toolUpdateFromCursorToolResult,
 } from "./tools.js";
@@ -160,12 +162,18 @@ export function mapCursorEventToAcp(
 			};
 
 			const info = toolInfoFromCursorToolCall(payload.toolName, payload.args);
+			const shortToolName = baseToolName(payload.toolName);
+			const isFileMutationTool = shortToolName === "edit" || shortToolName === "write";
+			const provisional = provisionalDiffContentFromFileToolArgs(
+				payload.toolName,
+				payload.args,
+			);
 			notifications.push({
 				sessionId: context.sessionId,
 				update: {
 					sessionUpdate: "tool_call",
 					toolCallId,
-					status: "pending",
+					status: isFileMutationTool ? "in_progress" : "pending",
 					rawInput: payload.args,
 					_meta: {
 						cursorCli: {
@@ -173,6 +181,7 @@ export function mapCursorEventToAcp(
 						},
 					},
 					...info,
+					...(provisional.length > 0 ? { content: provisional } : {}),
 				},
 			});
 			return { notifications };
