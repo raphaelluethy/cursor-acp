@@ -25,6 +25,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "build:clean": "rm -rf dist && tsc",
     "start": "node dist/index.js",
     "dev": "bun run build && node dist/index.js",
     "lint": "oxlint src",
@@ -41,7 +42,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build:clean"
   },
   "keywords": [
     "cursor",
