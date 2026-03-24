@@ -203,6 +203,21 @@ class FakeNativeBackend implements NativeSessionBackend {
 function createAgentTestHarness() {
 	const backends: FakeNativeBackend[] = [];
 	const client = new FakeClient();
+	let legacyPromptHandler:
+		| ((
+				promptText: string,
+				options: {
+					backendSessionId?: string;
+					force?: boolean;
+					onEvent?: (event: any) => Promise<void> | void;
+				},
+		  ) => Promise<any>)
+		| undefined;
+	const legacyPromptCalls: {
+		promptText: string;
+		backendSessionId?: string;
+		force?: boolean;
+	}[] = [];
 
 	const agent = new CursorAcpAgent(client as any, {
 		auth: {
@@ -220,6 +235,9 @@ function createAgentTestHarness() {
 			},
 		},
 		runner: {
+			async createChat() {
+				return "legacy-chat-1";
+			},
 			async listModels() {
 				return [
 					{ modelId: "auto", name: "Auto", current: true },
@@ -229,6 +247,32 @@ function createAgentTestHarness() {
 					{ modelId: "claude-4.5-opus-high", name: "Opus 4.5" },
 				];
 			},
+			startPrompt(options: any) {
+				legacyPromptCalls.push({
+					promptText: options.prompt,
+					backendSessionId: options.backendSessionId,
+					force: options.force,
+				});
+				const completed = (async () => {
+					if (legacyPromptHandler) {
+						return await legacyPromptHandler(options.prompt, {
+							backendSessionId: options.backendSessionId,
+							force: options.force,
+							onEvent: options.onEvent,
+						});
+					}
+					return {
+						events: [],
+						resultEvent: { type: "result", subtype: "success", is_error: false },
+						stderr: "",
+						exitCode: 0,
+					};
+				})();
+				return {
+					completed,
+					cancel() {},
+				};
+			},
 		} as any,
 		createNativeClient(options, callbacks) {
 			const backend = new FakeNativeBackend(options, callbacks, backends.length + 1);
@@ -237,7 +281,24 @@ function createAgentTestHarness() {
 		},
 	});
 
-	return { agent, backends, client };
+	return {
+		agent,
+		backends,
+		client,
+		legacyPromptCalls,
+		setLegacyPromptHandler(
+			handler: (
+				promptText: string,
+				options: {
+					backendSessionId?: string;
+					force?: boolean;
+					onEvent?: (event: any) => Promise<void> | void;
+				},
+			) => Promise<any>,
+		) {
+			legacyPromptHandler = handler;
+		},
+	};
 }
 
 function createLoggedOutAgentTestHarness() {
@@ -329,7 +390,7 @@ describe("CursorAcpAgent", () => {
 	});
 
 	it("forwards colliding slash commands to the native backend", async () => {
-		const { agent, backends } = createAgentTestHarness();
+		const { agent, legacyPromptCalls } = createAgentTestHarness();
 
 		await agent.initialize({
 			protocolVersion: 1,
@@ -347,7 +408,7 @@ describe("CursorAcpAgent", () => {
 		} as any);
 
 		expect(response.stopReason).toBe("end_turn");
-		expect(backends[0]!.promptCalls).toEqual(["/mode plan"]);
+		expect(legacyPromptCalls.map((call) => call.promptText)).toEqual(["/mode plan"]);
 		expect((agent as any).sessions[session.sessionId]?.modeId).toBe("default");
 	});
 
@@ -692,7 +753,7 @@ describe("CursorAcpAgent", () => {
 	});
 
 	it("forwards permission requests in default mode", async () => {
-		const { agent, backends, client } = createAgentTestHarness();
+		const { agent, client, setLegacyPromptHandler } = createAgentTestHarness();
 
 		await agent.initialize({
 			protocolVersion: 1,
@@ -702,26 +763,36 @@ describe("CursorAcpAgent", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		} as any);
-		await startNativeBackend(agent, session.sessionId);
 
-		backends[0]!.promptHandler = async () => {
-			await backends[0]!.callbacks.onRequestPermission({
-				sessionId: backends[0]!.nativeSessionId!,
-				options: [
-					{
-						optionId: "allow-once",
-						kind: "allow_once",
-						name: "Allow once",
+		setLegacyPromptHandler(async (_promptText, options) => {
+			await options.onEvent?.({
+				type: "tool_call",
+				subtype: "started",
+				call_id: "t1",
+				tool_call: {
+					shellToolCall: {
+						args: { command: "pwd" },
 					},
-				],
-				toolCall: {
-					toolCallId: "t1",
-					title: "`pwd`",
-					rawInput: { command: "pwd" },
 				},
-			} as any);
-			return { stopReason: "end_turn" };
-		};
+			});
+			await options.onEvent?.({
+				type: "tool_call",
+				subtype: "completed",
+				call_id: "t1",
+				tool_call: {
+					shellToolCall: {
+						args: { command: "pwd" },
+						result: { rejected: { command: "pwd", reason: "need approval" } },
+					},
+				},
+			});
+			return {
+				events: [],
+				resultEvent: { type: "result", subtype: "success", is_error: false },
+				stderr: "",
+				exitCode: 0,
+			};
+		});
 
 		await agent.prompt({
 			sessionId: session.sessionId,
@@ -916,8 +987,8 @@ describe("CursorAcpAgent", () => {
 		expect(backends[1]!.options.modelId).toBe("gpt-5.4-medium-fast");
 	});
 
-	it("rejects a second prompt while one is in progress", async () => {
-		const { agent, backends } = createAgentTestHarness();
+	it("normalizes native execute tool calls to text when terminal_output is unsupported", async () => {
+		const { agent, backends, client } = createAgentTestHarness();
 
 		await agent.initialize({
 			protocolVersion: 1,
@@ -929,17 +1000,145 @@ describe("CursorAcpAgent", () => {
 		} as any);
 		await startNativeBackend(agent, session.sessionId);
 
+		await backends[0]!.callbacks.onSessionUpdate({
+			sessionId: backends[0]!.nativeSessionId!,
+			update: {
+				sessionUpdate: "tool_call",
+				toolCallId: "t1",
+				kind: "execute",
+				title: "Terminal",
+				status: "in_progress",
+				rawInput: {
+					command: "pwd",
+				},
+				content: [{ type: "terminal", terminalId: "cursor-shell-t1" }],
+				_meta: {
+					terminal_info: {
+						terminal_id: "cursor-shell-t1",
+						cwd: "/tmp",
+					},
+				},
+			},
+		} as any);
+
+		await backends[0]!.callbacks.onSessionUpdate({
+			sessionId: backends[0]!.nativeSessionId!,
+			update: {
+				sessionUpdate: "tool_call_update",
+				toolCallId: "t1",
+				kind: "execute",
+				status: "completed",
+				rawOutput: "/tmp\n",
+				content: [{ type: "terminal", terminalId: "cursor-shell-t1" }],
+				_meta: {
+					terminal_output: {
+						terminal_id: "cursor-shell-t1",
+						data: "/tmp\n",
+					},
+					terminal_exit: {
+						terminal_id: "cursor-shell-t1",
+						exit_code: 0,
+						signal: null,
+					},
+				},
+			},
+		} as any);
+
+		const started = client.updates.find((u) => u.update?.toolCallId === "t1");
+		expect(started?.update?.title).toBe("`pwd`");
+		expect(started?.update?._meta?.terminal_info).toBeUndefined();
+		expect(started?.update?.content).toEqual([
+			{
+				type: "content",
+				content: { type: "text", text: "```sh\npwd\n```\n\nCurrent directory:\n/tmp" },
+			},
+		]);
+
+		const completed = client.updates.filter((u) => u.update?.toolCallId === "t1")[1];
+		expect(completed?.update?._meta?.terminal_output).toBeUndefined();
+		expect(completed?.update?._meta?.terminal_exit).toBeUndefined();
+		expect(completed?.update?.content).toEqual([
+			{
+				type: "content",
+				content: { type: "text", text: "```\n/tmp\n```" },
+			},
+		]);
+	});
+
+	it("still normalizes shell-like terminal updates to text even when terminal_output is supported", async () => {
+		const { agent, backends, client } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { terminal_output: true } },
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+		await startNativeBackend(agent, session.sessionId);
+
+		await backends[0]!.callbacks.onSessionUpdate({
+			sessionId: backends[0]!.nativeSessionId!,
+			update: {
+				sessionUpdate: "tool_call",
+				toolCallId: "t2",
+				kind: "execute",
+				title: "Terminal",
+				status: "in_progress",
+				rawInput: {
+					command: "pwd",
+				},
+				content: [{ type: "terminal", terminalId: "cursor-shell-t2" }],
+				_meta: {
+					terminal_info: {
+						terminal_id: "cursor-shell-t2",
+						cwd: "/tmp",
+					},
+				},
+			},
+		} as any);
+
+		const started = client.updates.find((u) => u.update?.toolCallId === "t2");
+		expect(started?.update?.content).toEqual([
+			{
+				type: "content",
+				content: { type: "text", text: "```sh\npwd\n```\n\nCurrent directory:\n/tmp" },
+			},
+		]);
+		expect(started?.update?._meta?.terminal_info).toBeUndefined();
+	});
+
+	it("rejects a second prompt while one is in progress", async () => {
+		const { agent, legacyPromptCalls, setLegacyPromptHandler } = createAgentTestHarness();
+
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		} as any);
+		const session = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		} as any);
+
 		let resolvePrompt: (() => void) | undefined;
-		backends[0]!.promptHandler = async () =>
-			await new Promise<{ stopReason: "end_turn" }>((resolve) => {
-				resolvePrompt = () => resolve({ stopReason: "end_turn" });
-			});
+		setLegacyPromptHandler(async () =>
+			await new Promise((resolve) => {
+				resolvePrompt = () =>
+					resolve({
+						events: [],
+						resultEvent: { type: "result", subtype: "success", is_error: false },
+						stderr: "",
+						exitCode: 0,
+					});
+			}),
+		);
 
 		const first = agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "run something" }],
 		} as any);
-		while (backends[0]!.promptCalls.length === 0) {
+		while (legacyPromptCalls.length === 0) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
 
@@ -955,7 +1154,7 @@ describe("CursorAcpAgent", () => {
 	});
 
 	it("rejects model changes while a prompt is active", async () => {
-		const { agent, backends } = createAgentTestHarness();
+		const { agent, legacyPromptCalls, setLegacyPromptHandler } = createAgentTestHarness();
 
 		await agent.initialize({
 			protocolVersion: 1,
@@ -965,19 +1164,25 @@ describe("CursorAcpAgent", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		} as any);
-		await startNativeBackend(agent, session.sessionId);
 
 		let resolvePrompt: (() => void) | undefined;
-		backends[0]!.promptHandler = async () =>
+		setLegacyPromptHandler(async () =>
 			await new Promise((resolve) => {
-				resolvePrompt = () => resolve({ stopReason: "end_turn" });
-			});
+				resolvePrompt = () =>
+					resolve({
+						events: [],
+						resultEvent: { type: "result", subtype: "success", is_error: false },
+						stderr: "",
+						exitCode: 0,
+					});
+			}),
+		);
 
 		const promptPromise = agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "run something" }],
 		} as any);
-		while (backends[0]!.promptCalls.length === 0) {
+		while (legacyPromptCalls.length === 0) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
 

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ToolCallContent } from "@agentclientprotocol/sdk";
-import { maybeDiffContentFromMutationResult, toolUpdateFromCursorToolResult } from "../tools.js";
+import {
+	maybeDiffContentFromMutationResult,
+	shellToolPresentation,
+	toolUpdateFromCursorToolResult,
+} from "../tools.js";
 
 function textFromContent(content: ToolCallContent[] | undefined): string {
 	const first = content?.[0];
@@ -16,6 +20,23 @@ function textFromContent(content: ToolCallContent[] | undefined): string {
 }
 
 describe("toolUpdateFromCursorToolResult", () => {
+	it("builds terminal content for shell tool presentation", () => {
+		const shell = shellToolPresentation(
+			{
+				command: "pnpm lint",
+				description: "Lint the workspace",
+				cd: "/repo",
+			},
+			"terminal-1",
+		);
+
+		expect(shell.title).toBe("`pnpm lint`");
+		expect(shell.cwd).toBe("/repo");
+		expect(shell.content).toEqual([
+			{ type: "terminal", terminalId: "terminal-1" },
+		]);
+	});
+
 	it("includes stdout and stderr output", () => {
 		const update = toolUpdateFromCursorToolResult(
 			"shellToolCall",
@@ -26,12 +47,10 @@ describe("toolUpdateFromCursorToolResult", () => {
 					stderr: "warn\n",
 				},
 			},
+			"terminal-1",
 		);
 
-		const text = textFromContent(update.content);
-		expect(text).toContain("line1");
-		expect(text).toContain("warn");
-		expect(text.startsWith("```\n")).toBe(true);
+		expect(update.content).toEqual([{ type: "terminal", terminalId: "terminal-1" }]);
 	});
 
 	it("falls back to content/text fields", () => {

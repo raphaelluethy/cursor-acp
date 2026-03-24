@@ -15,6 +15,12 @@ export interface ToolInfo {
 	locations?: ToolCallLocation[];
 }
 
+export interface ShellToolPresentation {
+	title: string;
+	content: ToolCallContent[];
+	cwd?: string;
+}
+
 export function markdownEscape(text: string): string {
 	let fence = "```";
 	for (const [m] of text.matchAll(/^```+/gm)) {
@@ -183,23 +189,32 @@ export function extractToolResultOutputText(
 
 // Intentionally no shell-specific formatting here; ACP UI renders the tool output.
 
-function describeShellCommand(args: Record<string, unknown>): {
-	title: string;
-	content: ToolCallContent[];
-} {
+export function shellToolPresentation(
+	args: Record<string, unknown>,
+	terminalId?: string,
+): ShellToolPresentation {
 	const command = typeof args.command === "string" ? args.command : "";
 	const description = typeof args.description === "string" ? args.description : "";
+	const cd = typeof args.cd === "string" && args.cd.length > 0 ? args.cd : undefined;
+
+	const content: ToolCallContent[] = [];
+	if (terminalId) {
+		content.push({
+			type: "terminal",
+			terminalId,
+		});
+	}
+	if (!terminalId && description) {
+		content.push({
+			type: "content",
+			content: { type: "text", text: description },
+		});
+	}
 
 	return {
 		title: command ? `\`${command.split("`").join("\\`")}\`` : "Shell",
-		content: description
-			? [
-					{
-						type: "content",
-						content: { type: "text", text: description },
-					},
-				]
-			: [],
+		content,
+		cwd: cd,
 	};
 }
 
@@ -211,7 +226,7 @@ export function toolInfoFromCursorToolCall(
 
 	switch (toolName) {
 		case "shell": {
-			const shell = describeShellCommand(args);
+			const shell = shellToolPresentation(args);
 			return {
 				kind: "execute",
 				title: shell.title,
@@ -425,11 +440,17 @@ export function toolUpdateFromCursorToolResult(
 	toolNameRaw: string,
 	args: Record<string, unknown>,
 	result: Record<string, unknown> | undefined,
+	terminalId?: string,
 ): { content?: ToolCallContent[]; locations?: ToolCallLocation[] } {
 	const toolName = baseToolName(toolNameRaw);
 
 	switch (toolName) {
 		case "shell": {
+			if (terminalId) {
+				return {
+					content: [{ type: "terminal", terminalId }],
+				};
+			}
 			const outputText = extractToolResultOutputText(result);
 			return {
 				content: textContent(outputText ?? "Command completed with no output."),

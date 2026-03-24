@@ -27,12 +27,18 @@ import {
 	SetSessionModeRequest,
 	SetSessionModeResponse,
 	SessionNotification,
+	ToolCallContent,
 	WriteTextFileRequest,
 	WriteTextFileResponse,
 } from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 import { CursorAuth, CursorAuthClient } from "./auth.js";
+import {
+	CachedToolUse,
+	mapCursorEventToAcp,
+	RejectedToolCall,
+} from "./cursor-event-mapper.js";
 import {
 	CreateNativeSessionOptions,
 	CursorNativeAcpClient,
@@ -50,6 +56,7 @@ import {
 import { availableModes, DEFAULT_MODE_ID, normalizeModeId, SessionModeId } from "./settings.js";
 import {
 	findSessionFile,
+	getCursorAcpConfigDir,
 	listSessions,
 	readSessionMeta,
 	recordAssistantMessage,
@@ -63,11 +70,145 @@ import {
 	recordTurnArtifactsFromNativeSessionUpdate,
 	type TurnArtifact,
 } from "./native-assistant-stream.js";
-import { Logger } from "./utils.js";
+import { Logger, unreachable } from "./utils.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+function markdownEscape(text: string): string {
+	let fence = "```";
+	for (const [m] of text.matchAll(/^```+/gm)) {
+		while (m.length >= fence.length) {
+			fence += "`";
+		}
+	}
+	return `${fence}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}`;
+}
+
+function plainTextContent(text: string): ToolCallContent[] {
+	return [
+		{
+			type: "content",
+			content: {
+				type: "text",
+				text,
+			},
+		},
+	];
+}
+
+function summarizeExecuteToolCall(update: Record<string, any>): ToolCallContent[] | undefined {
+	const rawInput = update.rawInput;
+	if (!rawInput || typeof rawInput !== "object") {
+		return undefined;
+	}
+	const command = typeof rawInput.command === "string" ? rawInput.command : "";
+	if (!command) {
+		return undefined;
+	}
+	const description = typeof rawInput.description === "string" ? rawInput.description : "";
+	const cwd = update._meta?.terminal_info?.cwd;
+	const lines: string[] = [];
+	if (description) {
+		lines.push(description, "");
+	}
+	lines.push("```sh", command, "```");
+	if (typeof cwd === "string" && cwd.length > 0) {
+		lines.push("", `Current directory:`, cwd);
+	}
+	return plainTextContent(lines.join("\n"));
+}
+
+function summarizeExecuteToolResult(update: Record<string, any>): ToolCallContent[] | undefined {
+	const rawOutput = update.rawOutput;
+	if (typeof rawOutput === "string") {
+		return plainTextContent(markdownEscape(rawOutput || "Command completed with no output."));
+	}
+	return undefined;
+}
+
+function normalizeNativeToolUpdateForClient(
+	update: SessionNotification["update"],
+	clientCapabilities?: ClientCapabilities,
+): SessionNotification["update"] {
+	const supportsTerminalOutput = clientCapabilities?._meta?.["terminal_output"] === true;
+	if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") {
+		return update;
+	}
+	const rawInput = (update as Record<string, any>).rawInput;
+	const command =
+		rawInput && typeof rawInput === "object" && typeof rawInput.command === "string"
+			? rawInput.command
+			: "";
+	const hasTerminalMeta = Boolean(
+		(update as Record<string, any>)._meta?.terminal_info ||
+			(update as Record<string, any>)._meta?.terminal_output ||
+			(update as Record<string, any>)._meta?.terminal_exit,
+	);
+	const looksLikeShellTool =
+		command.length > 0 || hasTerminalMeta || (update.kind === "execute" && !supportsTerminalOutput);
+	if (!looksLikeShellTool) {
+		return update;
+	}
+
+	const next: Record<string, any> = { ...update };
+	if (update.sessionUpdate === "tool_call") {
+		const content = summarizeExecuteToolCall(next);
+		if (content) {
+			next.content = content;
+		}
+		const command = typeof next.rawInput?.command === "string" ? next.rawInput.command : "";
+		if (command) {
+			next.title = `\`${command.split("`").join("\\`")}\``;
+		}
+	} else {
+		const hasOnlyTerminalContent =
+			Array.isArray(next.content) &&
+			next.content.length > 0 &&
+			next.content.every((item: any) => item?.type === "terminal");
+		if (hasOnlyTerminalContent || !Array.isArray(next.content) || next.content.length === 0) {
+			const content = summarizeExecuteToolResult(next);
+			if (content) {
+				next.content = content;
+			}
+		}
+	}
+
+	if (next._meta && typeof next._meta === "object") {
+		const meta = { ...next._meta };
+		delete meta.terminal_info;
+		delete meta.terminal_output;
+		delete meta.terminal_exit;
+		next._meta = meta;
+	}
+
+	return next as SessionNotification["update"];
+}
+
+function appendDebugLog(label: string, value: unknown): void {
+	if (process.env.CURSOR_ACP_DEBUG_LOG !== "1") {
+		return;
+	}
+	try {
+		const dir = path.join(getCursorAcpConfigDir(), "logs");
+		fs.mkdirSync(dir, { recursive: true });
+		const file = path.join(dir, "debug.log");
+		const line = `[${new Date().toISOString()}] ${label} ${JSON.stringify(value)}\n`;
+		fs.appendFileSync(file, line, "utf-8");
+	} catch {}
+}
 
 interface ActivePromptState {
 	assistantTextChunks: string[];
 	turnArtifacts: TurnArtifact[];
+}
+
+interface ActiveRunState {
+	cancel: () => void;
+}
+
+interface PromptAttemptResult {
+	stopReason: PromptResponse["stopReason"];
+	rejectedToolCalls: RejectedToolCall[];
 }
 
 interface SessionState {
@@ -79,6 +220,7 @@ interface SessionState {
 	lastAgentModeId: "default" | "yolo";
 	cancelled: boolean;
 	activePrompt?: ActivePromptState;
+	activeRun?: ActiveRunState;
 	backendSessionId?: string;
 	/** Populated from native `session/new` or `session/load` when available. */
 	nativeSessionModels?: NewSessionResponse["models"];
@@ -129,6 +271,7 @@ export class CursorAcpAgent implements Agent {
 
 	async initialize(request: InitializeRequest): Promise<InitializeResponse> {
 		this.clientCapabilities = request.clientCapabilities;
+		appendDebugLog("initialize.clientCapabilities", request.clientCapabilities ?? null);
 
 		const authMethod: NonNullable<InitializeResponse["authMethods"]>[number] = {
 			id: "cursor_login",
@@ -393,7 +536,7 @@ export class CursorAcpAgent implements Agent {
 			throw RequestError.authRequired();
 		}
 
-		if (session.activePrompt) {
+		if (session.activePrompt || session.activeRun) {
 			throw RequestError.invalidParams(
 				undefined,
 				"Cannot send a prompt while another prompt is in progress",
@@ -402,38 +545,49 @@ export class CursorAcpAgent implements Agent {
 
 		session.cancelled = false;
 		await recordUserMessage(session.cwd, session.sessionId, promptText);
+		const firstAttempt = await this.runPromptAttempt(session, promptText, false);
 
-		await this.ensureBackend(session);
-		session.activePrompt = { assistantTextChunks: [], turnArtifacts: [] };
-
-		try {
-			const result = await session.nativeClient!.prompt(promptText);
-
-			if (session.cancelled) {
-				return { stopReason: "cancelled" };
-			}
-
-			await this.finalizeAssistantTurnCapture(session, result);
-
-			return result;
-		} catch (error) {
-			if (session.cancelled) {
-				return { stopReason: "cancelled" };
-			}
-
-			if (error instanceof RequestError) {
-				throw error;
-			}
-
-			throw RequestError.internalError(undefined, String(error));
-		} finally {
-			session.activePrompt = undefined;
+		if (firstAttempt.stopReason === "cancelled" || session.cancelled) {
+			return { stopReason: "cancelled" };
 		}
+
+		if (
+			firstAttempt.stopReason === "end_turn" &&
+			session.modeId === "default" &&
+			firstAttempt.rejectedToolCalls.length > 0
+		) {
+			const approved = await this.requestPermissionToRetry(
+				session.sessionId,
+				firstAttempt.rejectedToolCalls[0]!,
+			);
+
+			if (session.cancelled) {
+				return { stopReason: "cancelled" };
+			}
+
+			if (approved === "allow_always") {
+				session.modeId = "yolo";
+				await this.client.sessionUpdate({
+					sessionId: session.sessionId,
+					update: {
+						sessionUpdate: "current_mode_update",
+						currentModeId: session.modeId,
+					},
+				});
+			}
+
+			if (approved === "allow_once" || approved === "allow_always") {
+				return await this.runPromptAttempt(session, promptText, true);
+			}
+		}
+
+		return { stopReason: firstAttempt.stopReason };
 	}
 
 	async cancel(params: CancelNotification): Promise<void> {
 		const session = this.requireSession(params.sessionId);
 		session.cancelled = true;
+		session.activeRun?.cancel();
 		await session.nativeClient?.cancel();
 	}
 
@@ -441,7 +595,7 @@ export class CursorAcpAgent implements Agent {
 		params: SetSessionModelRequest,
 	): Promise<SetSessionModelResponse | void> {
 		const session = this.requireSession(params.sessionId);
-		if (session.activePrompt) {
+		if (session.activePrompt || session.activeRun) {
 			throw RequestError.invalidParams("Cannot change model during an active prompt");
 		}
 
@@ -894,11 +1048,224 @@ export class CursorAcpAgent implements Agent {
 		}
 	}
 
+	private modeToRunnerOptions(
+		session: SessionState,
+		forceRetry: boolean,
+	): {
+		modeId?: "plan" | "ask";
+		force: boolean;
+	} {
+		if (forceRetry) {
+			return { force: true };
+		}
+
+		switch (session.modeId) {
+			case "plan":
+				return { modeId: "plan", force: false };
+			case "ask":
+				return { modeId: "ask", force: false };
+			case "yolo":
+				return { force: true };
+			case "default":
+				return { force: false };
+			default:
+				unreachable(session.modeId, this.logger);
+		}
+	}
+
+	private async ensureLegacyBackendSessionId(session: SessionState): Promise<void> {
+		if (session.backendSessionId) {
+			return;
+		}
+
+		try {
+			session.backendSessionId = await this.runner.createChat();
+			await recordSessionMeta(session.cwd, session.sessionId, session.backendSessionId);
+		} catch (error) {
+			this.logger.error(
+				"[cursor-acp] create-chat failed, using lazy backend session binding",
+				error,
+			);
+		}
+	}
+
+	private async runPromptAttempt(
+		session: SessionState,
+		promptText: string,
+		forceRetry: boolean,
+	): Promise<PromptAttemptResult> {
+		const rejectedToolCalls: RejectedToolCall[] = [];
+		const toolUseCache: Record<string, CachedToolUse> = {};
+		const modeSettings = this.modeToRunnerOptions(session, forceRetry);
+		const assistantTextChunks: string[] = [];
+
+		await this.ensureLegacyBackendSessionId(session);
+
+		const run = this.runner.startPrompt({
+			workspace: session.cwd,
+			backendSessionId: session.backendSessionId,
+			prompt: promptText,
+			modelId: session.modelId,
+			modeId: modeSettings.modeId,
+			force: modeSettings.force,
+			onEvent: async (event) => {
+				const mapped = mapCursorEventToAcp(event, {
+					sessionId: session.sessionId,
+					toolUseCache,
+					logger: this.logger,
+				});
+
+				if (mapped.backendSessionId) {
+					session.backendSessionId = mapped.backendSessionId;
+					await recordSessionMeta(session.cwd, session.sessionId, session.backendSessionId);
+				}
+
+				if (mapped.currentModeId) {
+					const translated = normalizeModeId(mapped.currentModeId);
+					if (translated) {
+						session.modeId = translated;
+					}
+				}
+
+				if (mapped.rejectedToolCall) {
+					rejectedToolCalls.push(mapped.rejectedToolCall);
+				}
+
+				for (const notification of mapped.notifications) {
+					if (
+						notification.update.sessionUpdate === "agent_message_chunk" &&
+						notification.update.content?.type === "text"
+					) {
+						assistantTextChunks.push(notification.update.content.text);
+					}
+					await this.client.sessionUpdate(notification);
+				}
+			},
+		});
+
+		session.activeRun = run;
+
+		try {
+			const completed = await run.completed;
+			session.activeRun = undefined;
+
+			if (session.cancelled) {
+				return {
+					stopReason: "cancelled",
+					rejectedToolCalls,
+				};
+			}
+
+			const resultEvent = completed.resultEvent;
+			if (!resultEvent) {
+				throw RequestError.internalError(
+					undefined,
+					"Cursor CLI did not emit a result event",
+				);
+			}
+
+			const subtype = typeof resultEvent.subtype === "string" ? resultEvent.subtype : "";
+			const isError = resultEvent.is_error === true;
+
+			if (subtype === "success" && !isError) {
+				if (assistantTextChunks.length > 0) {
+					await recordAssistantMessage(
+						session.cwd,
+						session.sessionId,
+						assistantTextChunks.join(""),
+					);
+				}
+				return {
+					stopReason: "end_turn",
+					rejectedToolCalls,
+				};
+			}
+
+			if (
+				subtype.includes("max_turn") ||
+				subtype.includes("max_budget") ||
+				subtype.includes("max_structured")
+			) {
+				return {
+					stopReason: "max_turn_requests",
+					rejectedToolCalls,
+				};
+			}
+
+			const resultText =
+				typeof resultEvent.result === "string" ? resultEvent.result : subtype;
+			throw RequestError.internalError(undefined, resultText || "Cursor CLI failed");
+		} catch (error) {
+			session.activeRun = undefined;
+			if (session.cancelled) {
+				return {
+					stopReason: "cancelled",
+					rejectedToolCalls,
+				};
+			}
+
+			if (error instanceof RequestError) {
+				throw error;
+			}
+
+			throw RequestError.internalError(undefined, String(error));
+		}
+	}
+
+	private async requestPermissionToRetry(
+		sessionId: string,
+		rejectedToolCall: RejectedToolCall,
+	): Promise<"allow_once" | "allow_always" | "reject"> {
+		const response = await this.client.requestPermission({
+			options: [
+				{
+					kind: "allow_once",
+					name: "Allow once",
+					optionId: "allow_once",
+				},
+				{
+					kind: "allow_always",
+					name: "Always allow",
+					optionId: "allow_always",
+				},
+				{
+					kind: "reject_once",
+					name: "Reject",
+					optionId: "reject",
+				},
+			],
+			sessionId,
+			toolCall: {
+				toolCallId: rejectedToolCall.toolCallId,
+				rawInput: rejectedToolCall.rawInput,
+				title: rejectedToolCall.title,
+			},
+		});
+
+		if (response.outcome?.outcome !== "selected") {
+			return "reject";
+		}
+
+		switch (response.outcome.optionId) {
+			case "allow_once":
+			case "allow_always":
+				return response.outcome.optionId;
+			case "reject":
+			default:
+				return "reject";
+		}
+	}
+
 	private async handleNativeSessionUpdate(
 		session: SessionState,
 		notification: SessionNotification,
 	): Promise<void> {
-		const update = notification.update;
+		appendDebugLog("native.update.raw", notification.update);
+		const update = normalizeNativeToolUpdateForClient(
+			notification.update,
+			this.clientCapabilities,
+		);
+		appendDebugLog("native.update.normalized", update);
 
 		if (session.activePrompt) {
 			appendAssistantTextFromNativeChunk(update, session.activePrompt.assistantTextChunks);

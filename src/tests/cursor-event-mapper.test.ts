@@ -37,6 +37,14 @@ describe("cursor event mapper", () => {
 		);
 
 		expect(started.notifications[0].update.sessionUpdate).toBe("tool_call");
+		const startedUpdate = started.notifications[0].update as any;
+		expect(startedUpdate.status).toBe("in_progress");
+		expect(startedUpdate.kind).toBe("execute");
+		expect(startedUpdate.title).toBe("`pwd`");
+		expect(startedUpdate.content).toEqual([{ type: "terminal", terminalId: "cursor-shell-call_1" }]);
+		expect(startedUpdate._meta?.terminal_info).toEqual({
+			terminal_id: "cursor-shell-call_1",
+		});
 
 		const completed = mapCursorEventToAcp(
 			{
@@ -56,9 +64,47 @@ describe("cursor event mapper", () => {
 		);
 
 		expect(completed.notifications[0].update.sessionUpdate).toBe("tool_call_update");
-		const update = completed.notifications[0].update as any;
+		expect((completed.notifications[0].update as any)._meta?.terminal_output).toEqual({
+			terminal_id: "cursor-shell-call_1",
+			data: "/tmp\n",
+		});
+		const update = completed.notifications[1].update as any;
 		expect(update.status).toBe("completed");
-		expect(update.content?.[0]?.content?.text).toContain("/tmp");
+		expect(update.content).toEqual([{ type: "terminal", terminalId: "cursor-shell-call_1" }]);
+		expect(update._meta?.terminal_exit).toEqual({
+			terminal_id: "cursor-shell-call_1",
+			exit_code: 0,
+			signal: null,
+		});
+	});
+
+	it("includes terminal cwd and description on shell tool start", () => {
+		const cache = {} as any;
+
+		const started = mapCursorEventToAcp(
+			{
+				type: "tool_call",
+				subtype: "started",
+				call_id: "call_2",
+				tool_call: {
+					shellToolCall: {
+						args: {
+							command: "npm test",
+							description: "Run the test suite",
+							cd: "/workspace/app",
+						},
+					},
+				},
+			},
+			{ sessionId: "s1", toolUseCache: cache },
+		);
+
+		const update = started.notifications[0].update as any;
+		expect(update.content).toEqual([{ type: "terminal", terminalId: "cursor-shell-call_2" }]);
+		expect(update._meta?.terminal_info).toEqual({
+			terminal_id: "cursor-shell-call_2",
+			cwd: "/workspace/app",
+		});
 	});
 
 	it("maps edit tool start to in_progress with provisional diff when args allow", () => {

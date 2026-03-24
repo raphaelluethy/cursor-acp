@@ -9,6 +9,7 @@ import {
 	baseToolName,
 	planEntriesFromCursorTodos,
 	provisionalDiffContentFromFileToolArgs,
+	shellToolPresentation,
 	toolInfoFromCursorToolCall,
 	toolUpdateFromCursorToolResult,
 } from "./tools.js";
@@ -87,6 +88,39 @@ function assistantTextChunks(event: CursorStreamEvent): string[] {
 	return chunks;
 }
 
+function shellTerminalId(toolCallId: string): string {
+	return `cursor-shell-${toolCallId}`;
+}
+
+function shellExitMeta(toolCallId: string, result: Record<string, unknown> | undefined): {
+	terminal_id: string;
+	exit_code: number;
+	signal: string | null;
+} {
+	const terminalId = shellTerminalId(toolCallId);
+	const success = result && isObject(result.success) ? result.success : null;
+	const error = result && isObject(result.error) ? result.error : null;
+	const exitCodeSource = success ?? error;
+	const exitCode =
+		exitCodeSource && typeof exitCodeSource.exitCode === "number"
+			? exitCodeSource.exitCode
+			: error
+				? 1
+				: 0;
+	const signal =
+		success && typeof success.signal === "string" && success.signal.length > 0
+			? success.signal
+			: error && typeof error.signal === "string" && error.signal.length > 0
+				? error.signal
+				: null;
+
+	return {
+		terminal_id: terminalId,
+		exit_code: exitCode,
+		signal,
+	};
+}
+
 export function mapCursorEventToAcp(
 	event: CursorStreamEvent,
 	context: MappingContext,
@@ -161,8 +195,17 @@ export function mapCursorEventToAcp(
 				payload,
 			};
 
-			const info = toolInfoFromCursorToolCall(payload.toolName, payload.args);
 			const shortToolName = baseToolName(payload.toolName);
+			const isShellTool = shortToolName === "shell";
+			const shellPresentation = isShellTool
+				? shellToolPresentation(payload.args, shellTerminalId(toolCallId))
+				: null;
+			const info = isShellTool
+				? {
+						...toolInfoFromCursorToolCall(payload.toolName, payload.args),
+						...shellPresentation,
+					}
+				: toolInfoFromCursorToolCall(payload.toolName, payload.args);
 			const isFileMutationTool = shortToolName === "edit" || shortToolName === "write";
 			const provisional = provisionalDiffContentFromFileToolArgs(
 				payload.toolName,
@@ -173,12 +216,20 @@ export function mapCursorEventToAcp(
 				update: {
 					sessionUpdate: "tool_call",
 					toolCallId,
-					status: isFileMutationTool ? "in_progress" : "pending",
+					status: isFileMutationTool || isShellTool ? "in_progress" : "pending",
 					rawInput: payload.args,
 					_meta: {
 						cursorCli: {
 							toolName: payload.toolName,
 						},
+						...(isShellTool
+							? {
+									terminal_info: {
+										terminal_id: shellTerminalId(toolCallId),
+										...(shellPresentation?.cwd ? { cwd: shellPresentation.cwd } : {}),
+									},
+								}
+							: {}),
 					},
 					...info,
 					...(provisional.length > 0 ? { content: provisional } : {}),
@@ -194,20 +245,36 @@ export function mapCursorEventToAcp(
 			};
 
 			const result = payload.result;
+			const isShellTool = cached.payload.toolName === "shellToolCall";
 			const infoUpdate = toolUpdateFromCursorToolResult(
 				cached.payload.toolName,
 				cached.payload.args,
 				result,
+				isShellTool ? shellTerminalId(toolCallId) : undefined,
 			);
 			const status = isRejectedToolResult(result) ? "failed" : "completed";
 
-			const isShellTool = cached.payload.toolName === "shellToolCall";
 			const shellOutputText = isShellTool ? extractToolResultOutputText(result) : null;
 			const shellToolResponseText = isShellTool
 				? formatShellToolResponse(result, shellOutputText)
 				: null;
 
 			const isTodoUpdate = cached.payload.toolName === "updateTodosToolCall";
+			if (isShellTool) {
+				notifications.push({
+					sessionId: context.sessionId,
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId,
+						_meta: {
+							terminal_output: {
+								terminal_id: shellTerminalId(toolCallId),
+								data: shellOutputText ?? "",
+							},
+						},
+					},
+				});
+			}
 			notifications.push({
 				sessionId: context.sessionId,
 				update: {
@@ -222,6 +289,11 @@ export function mapCursorEventToAcp(
 							toolName: cached.payload.toolName,
 							rawResult: isShellTool ? result : undefined,
 						},
+						...(isShellTool
+							? {
+									terminal_exit: shellExitMeta(toolCallId, result),
+								}
+							: {}),
 						...(shellToolResponseText
 							? {
 									claudeCode: {
