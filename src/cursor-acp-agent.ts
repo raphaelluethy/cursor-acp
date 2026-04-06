@@ -34,11 +34,7 @@ import {
 import { randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 import { CursorAuth, CursorAuthClient } from "./auth.js";
-import {
-	CachedToolUse,
-	mapCursorEventToAcp,
-	RejectedToolCall,
-} from "./cursor-event-mapper.js";
+import { CachedToolUse, mapCursorEventToAcp, RejectedToolCall } from "./cursor-event-mapper.js";
 import {
 	CreateNativeSessionOptions,
 	CursorNativeAcpClient,
@@ -47,11 +43,13 @@ import {
 	NativeSessionCallbacks,
 } from "./cursor-native-acp-client.js";
 import { CursorCliRunner } from "./cursor-cli-runner.js";
+import { normalizeModelId, resolveModelId } from "./model-id.js";
 import { parseLeadingSlashCommand, promptToCursorText } from "./prompt-conversion.js";
 import {
 	availableSlashCommands,
 	CursorModelDescriptor,
 	handleSlashCommand,
+	normalizeSlashCommandName,
 } from "./slash-commands.js";
 import { availableModes, DEFAULT_MODE_ID, normalizeModeId, SessionModeId } from "./settings.js";
 import {
@@ -141,11 +139,13 @@ function normalizeNativeToolUpdateForClient(
 			: "";
 	const hasTerminalMeta = Boolean(
 		(update as Record<string, any>)._meta?.terminal_info ||
-			(update as Record<string, any>)._meta?.terminal_output ||
-			(update as Record<string, any>)._meta?.terminal_exit,
+		(update as Record<string, any>)._meta?.terminal_output ||
+		(update as Record<string, any>)._meta?.terminal_exit,
 	);
 	const looksLikeShellTool =
-		command.length > 0 || hasTerminalMeta || (update.kind === "execute" && !supportsTerminalOutput);
+		command.length > 0 ||
+		hasTerminalMeta ||
+		(update.kind === "execute" && !supportsTerminalOutput);
 	if (!looksLikeShellTool) {
 		return update;
 	}
@@ -329,6 +329,7 @@ export class CursorAcpAgent implements Agent {
 			mcpServers: params.mcpServers,
 			preferredModeId: this.extractRequestedInitialMode(params),
 			preferredModelId: this.extractRequestedInitialModel(params),
+			warmNativeBackend: true,
 		});
 	}
 
@@ -599,7 +600,7 @@ export class CursorAcpAgent implements Agent {
 			throw RequestError.invalidParams("Cannot change model during an active prompt");
 		}
 
-		session.modelId = params.modelId;
+		session.modelId = normalizeModelId(params.modelId);
 		await this.restartBackend(session);
 		return {};
 	}
@@ -643,6 +644,7 @@ export class CursorAcpAgent implements Agent {
 		mcpServers?: NewSessionRequest["mcpServers"];
 		preferredModeId?: SessionModeId;
 		preferredModelId?: string;
+		warmNativeBackend?: boolean;
 	}): Promise<NewSessionResponse> {
 		const modeId = params.preferredModeId ?? DEFAULT_MODE_ID;
 		const session: SessionState = {
@@ -660,7 +662,10 @@ export class CursorAcpAgent implements Agent {
 
 		this.sessions[session.sessionId] = session;
 
-		const models = await this.getAvailableModels(session);
+		const fallbackModels = await this.getAvailableModels(session);
+		if (params.warmNativeBackend) {
+			await this.maybeWarmNativeBackendOnSessionCreate(session);
+		}
 		session.notificationsReady = true;
 		setTimeout(() => {
 			void this.flushPendingNotifications(session);
@@ -668,9 +673,33 @@ export class CursorAcpAgent implements Agent {
 
 		return {
 			sessionId: session.sessionId,
-			models,
+			models: session.nativeSessionModels ?? fallbackModels,
 			modes: availableModes(session.modeId),
 		};
+	}
+
+	private async maybeWarmNativeBackendOnSessionCreate(session: SessionState): Promise<void> {
+		try {
+			const status = await this.auth.status();
+			if (!status.loggedIn) {
+				return;
+			}
+		} catch (error) {
+			this.logger.warn?.(
+				"[cursor-acp] Unable to determine auth status during session creation",
+				error,
+			);
+			return;
+		}
+
+		try {
+			await this.createBackend(session);
+		} catch (error) {
+			this.logger.warn?.(
+				"[cursor-acp] Unable to warm native ACP backend during session creation",
+				error,
+			);
+		}
 	}
 
 	private extractRequestedInitialMode(params: NewSessionRequest): SessionModeId | undefined {
@@ -748,7 +777,7 @@ export class CursorAcpAgent implements Agent {
 			if (typeof candidate !== "string") {
 				continue;
 			}
-			const trimmed = candidate.trim();
+			const trimmed = normalizeModelId(candidate);
 			if (trimmed.length > 0) {
 				return trimmed;
 			}
@@ -854,40 +883,52 @@ export class CursorAcpAgent implements Agent {
 				);
 			}
 
-			const merged = new Map<
-				string,
-				{ modelId: string; name: string; description: string }
-			>();
+			const availableModels =
+				listedModels.length > 0
+					? listedModels.map((model) => ({
+							modelId: model.modelId,
+							name: this.modelDisplayName(model.modelId, model.name),
+							description: this.modelHoverDescription(model.modelId, model.name),
+						}))
+					: [
+							...new Map(
+								(loaded.models.availableModels ?? []).map((model) => {
+									const normalizedModelId = normalizeModelId(model.modelId);
+									return [
+										normalizedModelId,
+										{
+											modelId: normalizedModelId,
+											name: this.modelDisplayName(
+												normalizedModelId,
+												model.name,
+											),
+											description: this.modelHoverDescription(
+												normalizedModelId,
+												model.description ?? model.name,
+											),
+										},
+									];
+								}),
+							).values(),
+						];
 
-			for (const model of loaded.models.availableModels ?? []) {
-				merged.set(model.modelId, {
-					modelId: model.modelId,
-					name: this.modelDisplayName(model.modelId, model.name),
-					description: this.modelHoverDescription(
-						model.modelId,
-						model.description ?? model.name,
-					),
-				});
-			}
-
-			for (const model of listedModels) {
-				merged.set(model.modelId, {
-					modelId: model.modelId,
-					name: this.modelDisplayName(model.modelId, model.name),
-					description: this.modelHoverDescription(model.modelId, model.name),
-				});
-			}
+			const resolvedSessionModelId = resolveModelId(session.modelId, listedModels);
+			const resolvedNativeCurrentModelId = resolveModelId(
+				loaded.models.currentModelId,
+				listedModels,
+			);
+			session.modelId = resolvedSessionModelId;
 
 			const currentModelId =
-				loaded.models.currentModelId ??
+				resolvedNativeCurrentModelId ??
 				listedModels.find((model) => model.current)?.modelId ??
-				session.modelId ??
-				[...merged.keys()][0];
+				resolvedSessionModelId ??
+				availableModels[0]?.modelId;
 
 			session.nativeSessionModels = {
 				...loaded.models,
 				currentModelId,
-				availableModels: [...merged.values()],
+				availableModels,
 			};
 			if (currentModelId) {
 				session.modelId = currentModelId;
@@ -988,6 +1029,8 @@ export class CursorAcpAgent implements Agent {
 		} catch (error) {
 			this.logger.error("[cursor-acp] Unable to list models", error);
 		}
+
+		session.modelId = resolveModelId(session.modelId, listed);
 
 		const availableModels = listed.map((model) => ({
 			modelId: model.modelId,
@@ -1117,7 +1160,11 @@ export class CursorAcpAgent implements Agent {
 
 				if (mapped.backendSessionId) {
 					session.backendSessionId = mapped.backendSessionId;
-					await recordSessionMeta(session.cwd, session.sessionId, session.backendSessionId);
+					await recordSessionMeta(
+						session.cwd,
+						session.sessionId,
+						session.backendSessionId,
+					);
 				}
 
 				if (mapped.currentModeId) {
@@ -1327,9 +1374,9 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	private hasNativeSlashCommand(session: SessionState, commandName: string): boolean {
-		const normalized = commandName.toLowerCase();
+		const normalized = normalizeSlashCommandName(commandName).toLowerCase();
 		return session.nativeAvailableCommands.some(
-			(command) => command.name.toLowerCase() === normalized,
+			(command) => normalizeSlashCommandName(command.name).toLowerCase() === normalized,
 		);
 	}
 
