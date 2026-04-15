@@ -1497,14 +1497,14 @@ describe("CursorAcpAgent", () => {
 
 			expect(backends).toHaveLength(1);
 			expect(backends[0]!.loadCalls).toEqual(["be-native-1"]);
-				expect(response.models?.currentModelId).toBe("gpt-5.4-medium");
-				expect(response.models?.availableModels.map((model) => model.modelId)).toEqual([
-					"auto",
-					"gpt-5.4-medium",
-					"gpt-5.4-medium-fast",
-					"gpt-5.2",
-					"claude-4.5-opus-high",
-				]);
+			expect(response.models?.currentModelId).toBe("gpt-5.4-medium");
+			expect(response.models?.availableModels.map((model) => model.modelId)).toEqual([
+				"auto",
+				"gpt-5.4-medium",
+				"gpt-5.4-medium-fast",
+				"gpt-5.2",
+				"claude-4.5-opus-high",
+			]);
 			expect(
 				client.updates.filter((u) => u.update?.sessionUpdate === "user_message_chunk"),
 			).toHaveLength(1);
