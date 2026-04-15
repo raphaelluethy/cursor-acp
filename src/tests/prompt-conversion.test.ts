@@ -6,8 +6,8 @@ import {
 } from "../prompt-conversion.js";
 
 describe("prompt conversion", () => {
-	it("rewrites mcp slash command", () => {
-		expect(rewriteMcpSlashCommand("/mcp:server:name args")).toBe("/server:name (MCP) args");
+	it("preserves mcp slash command spelling", () => {
+		expect(rewriteMcpSlashCommand("/mcp:server:name args")).toBe("/mcp:server:name args");
 		expect(rewriteMcpSlashCommand("/compact")).toBe("/compact");
 	});
 
@@ -45,6 +45,16 @@ describe("prompt conversion", () => {
 			command: "commit",
 			args: "feat(parser)",
 			raw: "/commit\nfeat(parser)",
+		});
+	});
+
+	it("parses mcp marker without treating it as an argument", () => {
+		const parsed = parseLeadingSlashCommand("/server:name (MCP) extra args");
+		expect(parsed).toEqual({
+			hasSlash: true,
+			command: "server:name",
+			args: "extra args",
+			raw: "/server:name (MCP) extra args",
 		});
 	});
 });

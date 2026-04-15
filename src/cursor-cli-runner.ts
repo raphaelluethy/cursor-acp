@@ -1,5 +1,6 @@
 import { ChildProcessByStdio, spawn } from "node:child_process";
 import { Readable } from "node:stream";
+import { normalizeModelId } from "./model-id.js";
 import { CursorModelDescriptor, parseModelListOutput } from "./slash-commands.js";
 import { Logger, stripAnsi } from "./utils.js";
 
@@ -110,7 +111,7 @@ export class CursorCliRunner {
 		args.push("--workspace", options.workspace);
 
 		if (options.modelId) {
-			args.push("--model", options.modelId);
+			args.push("--model", normalizeModelId(options.modelId));
 		}
 
 		if (options.modeId) {

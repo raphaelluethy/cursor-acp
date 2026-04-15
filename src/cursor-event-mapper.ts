@@ -92,7 +92,10 @@ function shellTerminalId(toolCallId: string): string {
 	return `cursor-shell-${toolCallId}`;
 }
 
-function shellExitMeta(toolCallId: string, result: Record<string, unknown> | undefined): {
+function shellExitMeta(
+	toolCallId: string,
+	result: Record<string, unknown> | undefined,
+): {
 	terminal_id: string;
 	exit_code: number;
 	signal: string | null;
@@ -226,7 +229,9 @@ export function mapCursorEventToAcp(
 							? {
 									terminal_info: {
 										terminal_id: shellTerminalId(toolCallId),
-										...(shellPresentation?.cwd ? { cwd: shellPresentation.cwd } : {}),
+										...(shellPresentation?.cwd
+											? { cwd: shellPresentation.cwd }
+											: {}),
 									},
 								}
 							: {}),

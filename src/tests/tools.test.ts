@@ -32,9 +32,7 @@ describe("toolUpdateFromCursorToolResult", () => {
 
 		expect(shell.title).toBe("`pnpm lint`");
 		expect(shell.cwd).toBe("/repo");
-		expect(shell.content).toEqual([
-			{ type: "terminal", terminalId: "terminal-1" },
-		]);
+		expect(shell.content).toEqual([{ type: "terminal", terminalId: "terminal-1" }]);
 	});
 
 	it("includes stdout and stderr output", () => {

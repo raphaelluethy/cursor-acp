@@ -6,6 +6,7 @@ import {
 	availableSlashCommands,
 	handleSlashCommand,
 	loadCustomSlashCommands,
+	normalizeSlashCommandName,
 	parseModelListOutput,
 	resolveCustomSlashCommandPrompt,
 } from "../slash-commands.js";
@@ -68,6 +69,22 @@ describe("slash commands", () => {
 		expect(result.handled).toBe(true);
 		expect(result.responseText).toContain("Model set to gpt-5.2-fast");
 		expect(session.modelId).toBe("gpt-5.2-fast");
+	});
+
+	it("handles legacy /model fast syntax", async () => {
+		const session = { modelId: "auto", modeId: "default" as const };
+		const result = await handleSlashCommand("model", "composer-2[fast=true]", {
+			session,
+			auth: mockAuth,
+			listModels: async () => [
+				{ modelId: "composer-2", name: "Composer 2" },
+				{ modelId: "composer-2-fast", name: "Composer 2 Fast" },
+			],
+		});
+
+		expect(result.handled).toBe(true);
+		expect(result.responseText).toContain("Model set to composer-2-fast");
+		expect(session.modelId).toBe("composer-2-fast");
 	});
 
 	it("handles /mode set", async () => {
@@ -211,5 +228,12 @@ describe("slash commands", () => {
 		expect(result.responseText).toContain("/model <native-model>");
 		expect(result.responseText).toContain("/commit");
 		expect(result.responseText).toContain("/help");
+	});
+
+	it("normalizes equivalent slash command spellings", () => {
+		expect(normalizeSlashCommandName("mode")).toBe("mode");
+		expect(normalizeSlashCommandName("/mode")).toBe("mode");
+		expect(normalizeSlashCommandName("mcp:github:issue")).toBe("github:issue");
+		expect(normalizeSlashCommandName("/github:issue (MCP)")).toBe("github:issue");
 	});
 });

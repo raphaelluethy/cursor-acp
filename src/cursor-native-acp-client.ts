@@ -20,6 +20,7 @@ import {
 	ndJsonStream,
 } from "@agentclientprotocol/sdk";
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { normalizeModelId } from "./model-id.js";
 import { nodeToWebReadable, nodeToWebWritable, Logger, stripAnsi } from "./utils.js";
 
 export type NativeModeId = "agent" | "ask" | "plan";
@@ -254,7 +255,7 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 	private async start(): Promise<void> {
 		const args: string[] = [];
 		if (this.options.modelId) {
-			args.push("--model", this.options.modelId);
+			args.push("--model", normalizeModelId(this.options.modelId));
 		}
 		args.push("acp");
 

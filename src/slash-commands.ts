@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CursorAuthClient } from "./auth.js";
+import { resolveModelId } from "./model-id.js";
 import {
 	ADVERTISED_MODE_IDS,
 	modeDisplayName,
@@ -61,14 +62,20 @@ const BUILTIN_SLASH_COMMANDS: AvailableCommand[] = [
 	{ name: "status", description: "Show login status", input: null },
 ];
 
+export function normalizeSlashCommandName(commandName: string): string {
+	const trimmed = commandName.trim().replace(/^\/+/, "");
+	const withoutMcpSuffix = trimmed.replace(/\s+\(MCP\)$/i, "");
+	return withoutMcpSuffix.replace(/^mcp:/i, "");
+}
+
 export function availableSlashCommands(extraCommands: AvailableCommand[] = []): AvailableCommand[] {
 	const deduped = new Map<string, AvailableCommand>();
 	for (const command of extraCommands) {
-		deduped.set(command.name.toLowerCase(), command);
+		deduped.set(normalizeSlashCommandName(command.name).toLowerCase(), command);
 	}
 
 	for (const command of BUILTIN_SLASH_COMMANDS) {
-		const key = command.name.toLowerCase();
+		const key = normalizeSlashCommandName(command.name).toLowerCase();
 		if (!deduped.has(key)) {
 			deduped.set(key, command);
 		}
@@ -78,7 +85,8 @@ export function availableSlashCommands(extraCommands: AvailableCommand[] = []): 
 }
 
 function formatSlashCommand(command: AvailableCommand): string {
-	return command.input?.hint ? `/${command.name} ${command.input.hint}` : `/${command.name}`;
+	const name = command.name.startsWith("/") ? command.name : `/${command.name}`;
+	return command.input?.hint ? `${name} ${command.input.hint}` : name;
 }
 
 async function collectMarkdownFiles(dir: string): Promise<string[]> {
@@ -314,7 +322,7 @@ export async function handleSlashCommand(
 	args: string,
 	context: SlashCommandContext,
 ): Promise<SlashCommandResult> {
-	const normalized = command.toLowerCase();
+	const normalized = normalizeSlashCommandName(command).toLowerCase();
 
 	switch (normalized) {
 		case "help":
@@ -382,7 +390,8 @@ export async function handleSlashCommand(
 				};
 			}
 
-			const match = models.find((m) => m.modelId === target);
+			const resolvedTarget = resolveModelId(target, models);
+			const match = models.find((m) => m.modelId === resolvedTarget);
 			if (!match) {
 				return {
 					handled: true,

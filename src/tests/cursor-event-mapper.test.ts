@@ -41,7 +41,9 @@ describe("cursor event mapper", () => {
 		expect(startedUpdate.status).toBe("in_progress");
 		expect(startedUpdate.kind).toBe("execute");
 		expect(startedUpdate.title).toBe("`pwd`");
-		expect(startedUpdate.content).toEqual([{ type: "terminal", terminalId: "cursor-shell-call_1" }]);
+		expect(startedUpdate.content).toEqual([
+			{ type: "terminal", terminalId: "cursor-shell-call_1" },
+		]);
 		expect(startedUpdate._meta?.terminal_info).toEqual({
 			terminal_id: "cursor-shell-call_1",
 		});

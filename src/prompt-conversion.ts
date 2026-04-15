@@ -17,12 +17,7 @@ function basenameFromUri(uri: string): string {
 }
 
 export function rewriteMcpSlashCommand(text: string): string {
-	const mcpMatch = text.match(/^\/mcp:([^:\s]+):(\S+)(\s+.*)?$/);
-	if (!mcpMatch) {
-		return text;
-	}
-	const [, server, command, args] = mcpMatch;
-	return `/${server}:${command} (MCP)${args || ""}`;
+	return text;
 }
 
 function formatResourceLink(uri: string): string {
@@ -99,20 +94,30 @@ export function parseLeadingSlashCommand(text: string): ParsedSlashCommand {
 		return { hasSlash: false, command: null, args: trimmed, raw: text };
 	}
 
-	const match = trimmed.match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
-	if (!match) {
+	const withoutSlash = trimmed.slice(1);
+	if (withoutSlash.length === 0) {
 		return {
 			hasSlash: true,
-			command: trimmed.slice(1),
+			command: "",
 			args: "",
 			raw: text,
 		};
 	}
 
+	const firstWhitespace = withoutSlash.search(/\s/);
+	const command =
+		firstWhitespace === -1 ? withoutSlash : withoutSlash.slice(0, Math.max(firstWhitespace, 0));
+	let args = firstWhitespace === -1 ? "" : withoutSlash.slice(firstWhitespace).trim();
+	if (args.toUpperCase() === "(MCP)") {
+		args = "";
+	} else if (args.toUpperCase().startsWith("(MCP) ")) {
+		args = args.slice("(MCP)".length).trim();
+	}
+
 	return {
 		hasSlash: true,
-		command: match[1] || "",
-		args: match[2]?.trim() || "",
+		command,
+		args,
 		raw: text,
 	};
 }
