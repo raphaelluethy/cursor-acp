@@ -8,7 +8,7 @@ An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-cl
 
 ## About
 
-This is an `ai-assisted` personal project aimed at bringing Cursor's agent into Zed. It uses a hybrid approach: native `agent acp` where that helps ACP/session compatibility, and the legacy `agent --print --output-format stream-json` prompt path where that preserves richer tool-call details in clients.
+This is an `ai-assisted` personal project aimed at bringing Cursor's agent into Zed. It uses a hybrid approach: native `cursor-agent acp` where that helps ACP/session compatibility, and the legacy `cursor-agent --print --output-format stream-json` prompt path where that preserves richer tool-call details in clients.
 
 **Based on [claude-code-acp](https://github.com/zed-industries/claude-code-acp)** by Zed Industries - the original ACP adapter for Claude Code that served as the architectural foundation for this project.
 
@@ -16,8 +16,8 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 
 ### Hybrid backend
 
-- **Command-preserving prompt execution**: Uses the legacy `agent --print --output-format stream-json` prompt path so shell tool calls keep the exact command text (`pwd`, `npm test`, etc.) in ACP clients
-- **Native ACP compatibility layer**: Keeps native `agent acp` for ACP/session compatibility work where the native backend is still useful
+- **Command-preserving prompt execution**: Uses the legacy `cursor-agent --print --output-format stream-json` prompt path so shell tool calls keep the exact command text (`pwd`, `npm test`, etc.) in ACP clients
+- **Native ACP compatibility layer**: Keeps native `cursor-agent acp` for ACP/session compatibility work where the native backend is still useful
 - **Tool and message streaming**: Uses the stream-json mapper for prompt turns and still forwards native ACP `session/update` notifications where applicable
 - **Cursor extension RPCs**: Forwards native `cursor/*` extension methods and notifications (e.g. `cursor/ask_question`, `cursor/update_todos`) to the outer ACP client when supported
 - **Cursor commands and skills**: Relies on native ACP `available_commands_update` for Cursor/user commands and skills
@@ -44,11 +44,11 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 
 ## Breaking changes (hybrid backend & Yolo)
 
-Recent `cursor-acp` versions changed backend strategy more than once. The current release is hybrid: prompt execution uses the legacy **`agent --print --output-format stream-json`** path again so commands render correctly, while native `agent acp` is still used for compatibility/session features where it helps.
+Recent `cursor-acp` versions changed backend strategy more than once. The current release is hybrid: prompt execution uses the legacy **`cursor-agent --print --output-format stream-json`** path again so commands render correctly, while native `cursor-agent acp` is still used for compatibility/session features where it helps.
 
-### Configuration env vars removed
+### Configuration defaults
 
-Earlier releases documented `CURSOR_ACP_DEFAULT_MODE` and `CURSOR_ACP_DEFAULT_MODEL`. Those environment variables are **no longer read**. Defaults now come from the ACP client’s `session/new` request, for example Zed’s inline `default_mode` / `default_model` fields on the custom agent entry.
+Prefer ACP client defaults, such as Zed’s inline `default_mode` / `default_model` fields on the custom agent entry. The adapter still reads `CURSOR_ACP_DEFAULT_MODE` and `CURSOR_ACP_DEFAULT_MODEL` as fallback values when the client does not send defaults.
 
 ### Legacy Yolo mode name aliases removed
 
@@ -56,7 +56,7 @@ Older builds accepted `bypassPermissions` and `autoRunAllCommands` as synonyms f
 
 ### Hybrid backend
 
-- **Execution model**: Prompt turns run through the legacy stream-json CLI path, while session compatibility features still use native `agent acp` where useful.
+- **Execution model**: Prompt turns run through the legacy stream-json CLI path, while session compatibility features still use native `cursor-agent acp` where useful.
 - **Why this changed**: Current Cursor native ACP execute-tool updates collapse shell commands to a generic `Terminal` tool call with no original command string. The legacy stream-json path preserves `shellToolCall.args.command`, which lets ACP clients render the true command.
 - **Slash commands**: If Cursor advertises a command name that matches a built-in wrapper command (for example `/model`), the **native command wins** and is forwarded to the backend; the wrapper no longer always intercepts those names.
 - **Permissions**: Prompt-time tool visibility now comes from the stream-json path, while wrapper mode handling still controls retries and Yolo behavior.
@@ -81,7 +81,7 @@ The same notice is linked from [`docs/breaking-changes.md`](docs/breaking-change
 | `/login`  | Authenticate with Cursor               |
 | `/logout` | Sign out of Cursor                     |
 
-Other Cursor commands and skills are forwarded from native `agent acp` via `available_commands_update`.
+Other Cursor commands and skills are forwarded from native `cursor-agent acp` via `available_commands_update`.
 If a native Cursor command collides with one of the wrapper commands above, the native command takes precedence.
 
 ## Installation
@@ -186,7 +186,7 @@ Zed can pass the initial mode and model through the ACP `session/new` request. P
 - `default_mode` — one of `default`, `yolo`, `plan`, or `ask` (legacy alias: `acceptEdits` → `default`)
 - `default_model` — optional model ID forwarded from the ACP client when supported
 
-Omit keys you do not need. There is no separate adapter-specific config file for these defaults anymore.
+Omit keys you do not need. There is no separate adapter-specific config file for these defaults anymore. As a fallback, `CURSOR_ACP_DEFAULT_MODE` and `CURSOR_ACP_DEFAULT_MODEL` can be set in the adapter process environment.
 
 The mode picker in Zed (and other ACP clients) lists **Default**, **Yolo**, **Ask**, and **Plan** — including **Yolo**, which is implemented only in this adapter (Cursor’s native session still uses its usual Agent/Plan/Ask wiring under the hood).
 
@@ -243,7 +243,7 @@ bun run check       # Run lint and format checks
 - `default`, `yolo`, `ask`, and `plan` are the advertised modes
 - `acceptEdits` is a deprecated alias for `default` (still accepted). For Yolo, use **`yolo`**—`bypassPermissions` and `autoRunAllCommands` are no longer accepted (see **Legacy Yolo mode name aliases removed**)
 - `debug` is not exposed
-- Custom commands and skills are forwarded from native `agent acp`
+- Custom commands and skills are forwarded from native `cursor-agent acp`
 
 ## Project Structure
 
@@ -252,7 +252,7 @@ src/
 ├── index.ts              # CLI entry point
 ├── lib.ts                # Library exports
 ├── cursor-acp-agent.ts   # Outer ACP agent + compatibility layer
-├── cursor-native-acp-client.ts # Native `agent acp` bridge
+├── cursor-native-acp-client.ts # Native `cursor-agent acp` bridge
 ├── cursor-cli-runner.ts  # Cursor CLI helpers (model listing)
 ├── prompt-conversion.ts  # Flattens ACP prompts for native ACP forwarding
 ├── auth.ts               # Authentication handling
@@ -267,7 +267,7 @@ src/
 
 ## Configuration
 
-The adapter now uses `agent acp` as its execution backend and keeps local compatibility logic for resume/list/model behavior that native ACP does not currently expose.
+The adapter now uses `cursor-agent acp` as its session compatibility backend and keeps local compatibility logic for resume/list/model behavior that native ACP does not currently expose.
 
 ### Session Storage
 

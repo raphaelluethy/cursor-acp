@@ -20,6 +20,7 @@ import {
 	ndJsonStream,
 } from "@agentclientprotocol/sdk";
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { getDefaultCursorAgentCommand } from "./cursor-agent-command.js";
 import { normalizeModelId } from "./model-id.js";
 import { nodeToWebReadable, nodeToWebWritable, Logger, stripAnsi } from "./utils.js";
 
@@ -261,11 +262,11 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 
 		this.options.logger?.log?.(
 			"[cursor-acp] spawning native ACP:",
-			this.options.command ?? "agent",
+			this.options.command ?? getDefaultCursorAgentCommand(),
 			args.join(" "),
 		);
 
-		const child = spawn(this.options.command ?? "agent", args, {
+		const child = spawn(this.options.command ?? getDefaultCursorAgentCommand(), args, {
 			cwd: this.options.cwd,
 			env: process.env,
 			stdio: ["pipe", "pipe", "pipe"],
@@ -340,7 +341,7 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 		return this.nativeSessionId;
 	}
 
-	/** Mirror the outer client's fs/terminal flags so native `agent acp` can use them. */
+	/** Mirror the outer client's fs/terminal flags so native `cursor-agent acp` can use them. */
 	private buildInnerClientCapabilities(outer?: ClientCapabilities): ClientCapabilities {
 		const fs = outer?.fs;
 		return {

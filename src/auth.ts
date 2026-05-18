@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { getDefaultCursorAgentCommand } from "./cursor-agent-command.js";
 import { stripAnsi } from "./utils.js";
 
 type Environment = Record<string, string | undefined>;
@@ -14,7 +15,7 @@ export interface CommandRunner {
 }
 
 export class AgentCommandRunner implements CommandRunner {
-	constructor(private readonly command: string = "agent") {}
+	constructor(private readonly command: string = getDefaultCursorAgentCommand()) {}
 
 	async run(
 		args: string[],

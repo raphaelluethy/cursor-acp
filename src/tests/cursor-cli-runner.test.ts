@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { noopLogger } from "./test-support.js";
 import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,7 +16,7 @@ afterResult();\n\nfunction afterResult() {\n  const event = { type: "result", su
 		await writeFile(scriptPath, script, "utf8");
 		await chmod(scriptPath, 0o755);
 
-		const runner = new CursorCliRunner(scriptPath, { log() {} } as any);
+		const runner = new CursorCliRunner(scriptPath, noopLogger);
 		const run = runner.startPrompt({
 			workspace: tempRoot,
 			prompt: "hello",
@@ -60,7 +61,7 @@ setTimeout(() => {
 		await writeFile(scriptPath, script, "utf8");
 		await chmod(scriptPath, 0o755);
 
-		const runner = new CursorCliRunner(scriptPath, { log() {} } as any);
+		const runner = new CursorCliRunner(scriptPath, noopLogger);
 		const run = runner.startPrompt({
 			workspace: tempRoot,
 			prompt: "hello",

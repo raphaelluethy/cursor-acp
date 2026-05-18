@@ -1,5 +1,6 @@
 import { ChildProcessByStdio, spawn } from "node:child_process";
 import { Readable } from "node:stream";
+import { getDefaultCursorAgentCommand } from "./cursor-agent-command.js";
 import { normalizeModelId } from "./model-id.js";
 import { CursorModelDescriptor, parseModelListOutput } from "./slash-commands.js";
 import { Logger, stripAnsi } from "./utils.js";
@@ -36,17 +37,31 @@ export interface CursorPromptRun {
 	cancel: () => void;
 }
 
+export interface CursorCliRunnerLike {
+	listModels(): Promise<CursorModelDescriptor[]>;
+	createChat(): Promise<string>;
+	startPrompt(options: RunPromptOptions): CursorPromptRun;
+}
+
 async function runCommand(
 	command: string,
 	args: string[],
-	options?: { cwd?: string; env?: Environment },
+	options?: { cwd?: string; env?: Environment; timeoutMs?: number },
 ): Promise<{ code: number; stdout: string; stderr: string }> {
 	return await new Promise((resolve, reject) => {
+		let timedOut = false;
 		const child = spawn(command, args, {
 			cwd: options?.cwd,
 			env: options?.env ?? process.env,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
+		const timeout = options?.timeoutMs
+			? setTimeout(() => {
+					timedOut = true;
+					child.kill("SIGTERM");
+				}, options.timeoutMs)
+			: undefined;
+		timeout?.unref();
 
 		let stdout = "";
 		let stderr = "";
@@ -58,25 +73,35 @@ async function runCommand(
 			stderr += chunk.toString("utf8");
 		});
 
-		child.on("error", reject);
+		child.on("error", (error) => {
+			if (timeout) {
+				clearTimeout(timeout);
+			}
+			reject(error);
+		});
 		child.on("close", (code) => {
+			if (timeout) {
+				clearTimeout(timeout);
+			}
 			resolve({
 				code: code ?? 1,
 				stdout,
-				stderr,
+				stderr: timedOut ? `${stderr}\nTimed out after ${options?.timeoutMs}ms` : stderr,
 			});
 		});
 	});
 }
 
-export class CursorCliRunner {
+export class CursorCliRunner implements CursorCliRunnerLike {
 	constructor(
-		private readonly command: string = "agent",
+		private readonly command: string = getDefaultCursorAgentCommand(),
 		private readonly logger: Logger = console,
 	) {}
 
 	async listModels(): Promise<CursorModelDescriptor[]> {
-		const result = await runCommand(this.command, ["--list-models"]);
+		const result = await runCommand(this.command, ["--list-models"], {
+			timeoutMs: 10_000,
+		});
 		const output = stripAnsi(`${result.stdout}\n${result.stderr}`);
 		if (result.code !== 0) {
 			throw new Error(`Failed to list models: ${output.trim()}`);
