@@ -3,6 +3,7 @@ import {
 	appendAssistantTextFromNativeChunk,
 	formatTurnRecapMarkdown,
 	recordTurnArtifactsFromNativeSessionUpdate,
+	type TurnArtifact,
 } from "../native-assistant-stream.js";
 
 describe("appendAssistantTextFromNativeChunk", () => {
@@ -33,7 +34,7 @@ describe("appendAssistantTextFromNativeChunk", () => {
 
 describe("recordTurnArtifactsFromNativeSessionUpdate", () => {
 	it("records completed edit updates", () => {
-		const artifacts: any[] = [];
+		const artifacts: TurnArtifact[] = [];
 		recordTurnArtifactsFromNativeSessionUpdate(artifacts, {
 			sessionUpdate: "tool_call_update",
 			status: "completed",

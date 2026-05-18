@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { PromptRequest } from "@agentclientprotocol/sdk";
 import {
 	parseLeadingSlashCommand,
 	promptToCursorText,
@@ -12,7 +13,7 @@ describe("prompt conversion", () => {
 	});
 
 	it("converts resources and mentions", () => {
-		const text = promptToCursorText({
+		const request: PromptRequest = {
 			sessionId: "s1",
 			prompt: [
 				{ type: "text", text: "Please inspect" },
@@ -30,7 +31,8 @@ describe("prompt conversion", () => {
 					},
 				},
 			],
-		} as any);
+		};
+		const text = promptToCursorText(request);
 
 		expect(text).toContain("Please inspect");
 		expect(text).toContain("@bar.ts (file:///tmp/foo/bar.ts)");
