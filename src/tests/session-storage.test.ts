@@ -9,6 +9,8 @@ import {
 	appendSessionEntry,
 	recordUserMessage,
 	recordAssistantMessage,
+	recordSessionMeta,
+	readSessionMeta,
 	findSessionFile,
 	listSessions,
 	replaySessionHistory,
@@ -145,6 +147,28 @@ describe("session-storage", () => {
 			expect(entry.sessionId).toBe(sessionId);
 			expect(entry.message.role).toBe("assistant");
 			expect(entry.message.content).toBe("I can help with that");
+		});
+	});
+
+	describe("session metadata", () => {
+		it("records and reads the latest backend session id and mode", async () => {
+			const cwd = "/Users/test/project";
+			const sessionId = "test-session";
+
+			await recordSessionMeta(cwd, sessionId, {
+				backendSessionId: "backend-1",
+				modeId: "default",
+			});
+			await recordSessionMeta(cwd, sessionId, {
+				backendSessionId: "backend-2",
+				modeId: "yolo",
+			});
+
+			const meta = await readSessionMeta(sessionFilePath(cwd, sessionId));
+			expect(meta).toEqual({
+				backendSessionId: "backend-2",
+				modeId: "yolo",
+			});
 		});
 	});
 
@@ -404,8 +428,13 @@ describe("session-storage", () => {
 			});
 
 			expect(notifications).toHaveLength(1);
-			const update = notifications[0].update as any;
-			expect(update.content.text).toBe("Part 1Part 2");
+			const update = notifications[0].update;
+			expect(update.sessionUpdate).toBe("agent_message_chunk");
+			if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
+				expect(update.content.text).toBe("Part 1Part 2");
+			} else {
+				throw new Error("Expected text agent message chunk");
+			}
 		});
 	});
 });

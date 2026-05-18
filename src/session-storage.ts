@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as readline from "node:readline";
 import { SessionInfo, SessionNotification } from "@agentclientprotocol/sdk";
+import { normalizeModeId, SessionModeId } from "./settings.js";
 
 const NO_TITLE_PLACEHOLDER = "[no title]";
 
@@ -27,6 +28,7 @@ export interface SessionMetaEntry {
 	sessionId: string;
 	cwd: string;
 	backendSessionId?: string;
+	modeId?: SessionModeId;
 }
 
 interface SessionListEntry {
@@ -85,14 +87,18 @@ export async function appendSessionEntry(
 export async function recordSessionMeta(
 	cwd: string,
 	sessionId: string,
-	backendSessionId: string | undefined,
+	meta: {
+		backendSessionId?: string;
+		modeId?: SessionModeId;
+	},
 ): Promise<void> {
 	const entry: SessionMetaEntry = {
 		type: "session_meta",
 		timestamp: new Date().toISOString(),
 		sessionId,
 		cwd,
-		backendSessionId,
+		backendSessionId: meta.backendSessionId,
+		modeId: meta.modeId,
 	};
 	await ensureSessionDir(cwd);
 	const filePath = sessionFilePath(cwd, sessionId);
@@ -101,24 +107,44 @@ export async function recordSessionMeta(
 }
 
 /**
- * Read session metadata from the session file, returning the backendSessionId if stored.
+ * Read session metadata from the session file, returning the latest stored values.
  */
-export async function readSessionMeta(filePath: string): Promise<{ backendSessionId?: string }> {
+export async function readSessionMeta(filePath: string): Promise<{
+	backendSessionId?: string;
+	modeId?: SessionModeId;
+}> {
 	try {
 		const content = await fs.promises.readFile(filePath, "utf-8");
 		const lines = content.trim().split("\n").filter(Boolean);
 		let lastBackend: string | undefined;
+		let lastModeId: SessionModeId | undefined;
 		for (const line of lines) {
 			try {
-				const entry = JSON.parse(line) as { type?: string; backendSessionId?: string };
-				if (entry.type === "session_meta" && entry.backendSessionId) {
+				const entry = JSON.parse(line) as {
+					type?: string;
+					backendSessionId?: string;
+					modeId?: string;
+				};
+				if (entry.type !== "session_meta") {
+					continue;
+				}
+				if (entry.backendSessionId) {
 					lastBackend = entry.backendSessionId;
+				}
+				if (typeof entry.modeId === "string") {
+					const normalizedModeId = normalizeModeId(entry.modeId);
+					if (normalizedModeId) {
+						lastModeId = normalizedModeId;
+					}
 				}
 			} catch {
 				continue;
 			}
 		}
-		return lastBackend ? { backendSessionId: lastBackend } : {};
+		return {
+			backendSessionId: lastBackend,
+			modeId: lastModeId,
+		};
 	} catch {
 		// file not readable
 	}
