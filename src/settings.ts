@@ -11,6 +11,24 @@ export type SessionModeId = (typeof ADVERTISED_MODE_IDS)[number];
 
 export const DEFAULT_MODE_ID: SessionModeId = "default";
 
+export function getEnvDefaultMode(): SessionModeId | undefined {
+	const raw = process.env.CURSOR_ACP_DEFAULT_MODE;
+	if (!raw) {
+		return undefined;
+	}
+	const normalized = normalizeModeId(raw.trim());
+	return normalized ?? undefined;
+}
+
+export function getEnvDefaultModel(): string | undefined {
+	const raw = process.env.CURSOR_ACP_DEFAULT_MODEL;
+	if (!raw) {
+		return undefined;
+	}
+	const trimmed = raw.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
 export function normalizeModeId(value: string): SessionModeId | null {
 	if (ADVERTISED_MODE_IDS.includes(value as SessionModeId)) {
 		return value as SessionModeId;

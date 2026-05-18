@@ -2,6 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type {
+	AvailableCommand,
+	NewSessionResponse,
+	PromptResponse,
+	RequestPermissionRequest,
+	RequestPermissionResponse,
+	SessionNotification,
+} from "@agentclientprotocol/sdk";
 import {
 	CreateNativeSessionOptions,
 	NativeModeId,
@@ -9,26 +17,38 @@ import {
 	NativeSessionCallbacks,
 } from "../cursor-native-acp-client.js";
 import { CursorAcpAgent } from "../cursor-acp-agent.js";
+import type { CursorAcpClient } from "../cursor-acp-client.js";
+import type { RunPromptOptions } from "../cursor-cli-runner.js";
 import {
 	recordAssistantMessage,
 	recordSessionMeta,
 	recordUserMessage,
 } from "../session-storage.js";
+import {
+	agentTestAccess,
+	awaitNativeWarmup,
+	ensureNativeBackend,
+	initRequest,
+	newSessionRequest,
+} from "./test-support.js";
+import type { LegacyPromptHandler, TestCliRunner } from "./test-support.js";
 
-class FakeClient {
-	updates: any[] = [];
-	permissionCalls: any[] = [];
+class FakeClient implements CursorAcpClient {
+	updates: SessionNotification[] = [];
+	permissionCalls: RequestPermissionRequest[] = [];
 	extMethodCalls: { method: string; params: Record<string, unknown> }[] = [];
 	extNotificationCalls: { method: string; params: Record<string, unknown> }[] = [];
 	extMethodResponses: Record<string, Record<string, unknown>> = {};
 
-	async sessionUpdate(params: any): Promise<void> {
+	async sessionUpdate(params: SessionNotification): Promise<void> {
 		this.updates.push(params);
 	}
 
-	async requestPermission(params: any): Promise<any> {
+	async requestPermission(
+		params: RequestPermissionRequest,
+	): Promise<RequestPermissionResponse> {
 		this.permissionCalls.push(params);
-		const allowOption = params.options.find((option: any) => option.kind.startsWith("allow"));
+		const allowOption = params.options.find((option) => option.kind.startsWith("allow"));
 		return {
 			outcome: {
 				outcome: "selected",
@@ -49,11 +69,11 @@ class FakeClient {
 		this.extNotificationCalls.push({ method, params });
 	}
 
-	async readTextFile(_params: any): Promise<any> {
+	async readTextFile(): Promise<{ content: string }> {
 		return { content: "" };
 	}
 
-	async writeTextFile(_params: any): Promise<any> {
+	async writeTextFile(): Promise<Record<string, never>> {
 		return {};
 	}
 }
@@ -66,12 +86,17 @@ class FakeNativeBackend implements NativeSessionBackend {
 	modeCalls: NativeModeId[] = [];
 	nativeSessionId: string | undefined;
 	promptCalls: string[] = [];
-	promptHandler?: (promptText: string) => Promise<any>;
+	promptHandler?: (promptText: string) => Promise<PromptResponse>;
 
 	constructor(
 		readonly options: CreateNativeSessionOptions,
 		readonly callbacks: NativeSessionCallbacks,
 		private readonly index: number,
+		private readonly backendOptions: {
+			createCurrentModelId?: string;
+			createCurrentModeId?: NativeModeId;
+			createSessionBlocker?: Promise<void>;
+		} = {},
 	) {
 		this.nativeSessionId = `native-${index}`;
 	}
@@ -83,9 +108,11 @@ class FakeNativeBackend implements NativeSessionBackend {
 		this.closeCalls += 1;
 	}
 
-	async createSessionBackend(): Promise<any> {
+	async createSessionBackend(): Promise<NewSessionResponse> {
 		this.createCalls += 1;
-		const currentModelId = this.options.modelId ?? "auto";
+		await this.backendOptions.createSessionBlocker;
+		const currentModelId =
+			this.backendOptions.createCurrentModelId ?? this.options.modelId ?? "auto";
 		await this.callbacks.onSessionUpdate({
 			sessionId: this.nativeSessionId!,
 			update: {
@@ -95,7 +122,7 @@ class FakeNativeBackend implements NativeSessionBackend {
 					{ name: "mode", description: "Native mode", input: null },
 				],
 			},
-		} as any);
+		});
 
 		return {
 			sessionId: this.nativeSessionId!,
@@ -110,7 +137,7 @@ class FakeNativeBackend implements NativeSessionBackend {
 				],
 			},
 			modes: {
-				currentModeId: "agent",
+				currentModeId: this.backendOptions.createCurrentModeId ?? "agent",
 				availableModes: [
 					{ id: "agent", name: "Agent", description: "Agent mode" },
 					{ id: "plan", name: "Plan", description: "Plan mode" },
@@ -120,7 +147,7 @@ class FakeNativeBackend implements NativeSessionBackend {
 		};
 	}
 
-	async loadSessionBackend(nativeSessionId: string): Promise<any> {
+	async loadSessionBackend(nativeSessionId: string): Promise<NewSessionResponse> {
 		this.loadCalls.push(nativeSessionId);
 		this.nativeSessionId = nativeSessionId;
 		await this.callbacks.onSessionUpdate({
@@ -132,7 +159,7 @@ class FakeNativeBackend implements NativeSessionBackend {
 					{ name: "mode", description: "Native mode", input: null },
 				],
 			},
-		} as any);
+		});
 
 		return {
 			models: {
@@ -158,7 +185,7 @@ class FakeNativeBackend implements NativeSessionBackend {
 		};
 	}
 
-	async prompt(promptText: string): Promise<any> {
+	async prompt(promptText: string): Promise<PromptResponse> {
 		this.promptCalls.push(promptText);
 		if (this.promptHandler) {
 			return await this.promptHandler(promptText);
@@ -167,11 +194,11 @@ class FakeNativeBackend implements NativeSessionBackend {
 		return { stopReason: "end_turn" };
 	}
 
-	async restartBackend(): Promise<any> {
+	async restartBackend(): Promise<NewSessionResponse> {
 		return await this.createSessionBackend();
 	}
 
-	async setNativeMode(modeId: NativeModeId): Promise<any> {
+	async setNativeMode(modeId: NativeModeId): Promise<Record<string, never>> {
 		this.modeCalls.push(modeId);
 		await this.callbacks.onSessionUpdate({
 			sessionId: this.nativeSessionId!,
@@ -179,7 +206,7 @@ class FakeNativeBackend implements NativeSessionBackend {
 				sessionUpdate: "current_mode_update",
 				currentModeId: modeId,
 			},
-		} as any);
+		});
 		return {};
 	}
 
@@ -207,26 +234,64 @@ class FakeNativeBackend implements NativeSessionBackend {
 	}
 }
 
-function createAgentTestHarness() {
+function createAgentTestHarness(
+	backendOptions: {
+		createCurrentModelId?: string;
+		createCurrentModeId?: NativeModeId;
+		createSessionBlocker?: Promise<void>;
+	} = {},
+) {
 	const backends: FakeNativeBackend[] = [];
 	const client = new FakeClient();
-	let legacyPromptHandler:
-		| ((
-				promptText: string,
-				options: {
-					backendSessionId?: string;
-					force?: boolean;
-					onEvent?: (event: any) => Promise<void> | void;
-				},
-		  ) => Promise<any>)
-		| undefined;
+	let legacyPromptHandler: LegacyPromptHandler | undefined;
 	const legacyPromptCalls: {
 		promptText: string;
 		backendSessionId?: string;
 		force?: boolean;
 	}[] = [];
 
-	const agent = new CursorAcpAgent(client as any, {
+	const runner: TestCliRunner = {
+		async createChat() {
+			return "legacy-chat-1";
+		},
+		async listModels() {
+			return [
+				{ modelId: "auto", name: "Auto", current: true },
+				{ modelId: "gpt-5.4-medium", name: "GPT-5.4" },
+				{ modelId: "gpt-5.4-medium-fast", name: "GPT-5.4 Fast" },
+				{ modelId: "gpt-5.2", name: "GPT-5.2" },
+				{ modelId: "claude-4.5-opus-high", name: "Opus 4.5" },
+			];
+		},
+		startPrompt(options: RunPromptOptions) {
+			legacyPromptCalls.push({
+				promptText: options.prompt,
+				backendSessionId: options.backendSessionId,
+				force: options.force,
+			});
+			const completed = (async () => {
+				if (legacyPromptHandler) {
+					return await legacyPromptHandler(options.prompt, {
+						backendSessionId: options.backendSessionId,
+						force: options.force,
+						onEvent: options.onEvent,
+					});
+				}
+				return {
+					events: [],
+					resultEvent: { type: "result", subtype: "success", is_error: false },
+					stderr: "",
+					exitCode: 0,
+				};
+			})();
+			return {
+				completed,
+				cancel() {},
+			};
+		},
+	};
+
+	const agent = new CursorAcpAgent(client, {
 		auth: {
 			async status() {
 				return { loggedIn: true as const, account: "u@e", raw: "" };
@@ -241,48 +306,14 @@ function createAgentTestHarness() {
 				return { code: 0, stdout: "", stderr: "" };
 			},
 		},
-		runner: {
-			async createChat() {
-				return "legacy-chat-1";
-			},
-			async listModels() {
-				return [
-					{ modelId: "auto", name: "Auto", current: true },
-					{ modelId: "gpt-5.4-medium", name: "GPT-5.4" },
-					{ modelId: "gpt-5.4-medium-fast", name: "GPT-5.4 Fast" },
-					{ modelId: "gpt-5.2", name: "GPT-5.2" },
-					{ modelId: "claude-4.5-opus-high", name: "Opus 4.5" },
-				];
-			},
-			startPrompt(options: any) {
-				legacyPromptCalls.push({
-					promptText: options.prompt,
-					backendSessionId: options.backendSessionId,
-					force: options.force,
-				});
-				const completed = (async () => {
-					if (legacyPromptHandler) {
-						return await legacyPromptHandler(options.prompt, {
-							backendSessionId: options.backendSessionId,
-							force: options.force,
-							onEvent: options.onEvent,
-						});
-					}
-					return {
-						events: [],
-						resultEvent: { type: "result", subtype: "success", is_error: false },
-						stderr: "",
-						exitCode: 0,
-					};
-				})();
-				return {
-					completed,
-					cancel() {},
-				};
-			},
-		} as any,
+		runner,
 		createNativeClient(options, callbacks) {
-			const backend = new FakeNativeBackend(options, callbacks, backends.length + 1);
+			const backend = new FakeNativeBackend(
+				options,
+				callbacks,
+				backends.length + 1,
+				backendOptions,
+			);
 			backends.push(backend);
 			return backend;
 		},
@@ -293,16 +324,7 @@ function createAgentTestHarness() {
 		backends,
 		client,
 		legacyPromptCalls,
-		setLegacyPromptHandler(
-			handler: (
-				promptText: string,
-				options: {
-					backendSessionId?: string;
-					force?: boolean;
-					onEvent?: (event: any) => Promise<void> | void;
-				},
-			) => Promise<any>,
-		) {
+		setLegacyPromptHandler(handler: LegacyPromptHandler) {
 			legacyPromptHandler = handler;
 		},
 	};
@@ -312,7 +334,7 @@ function createLoggedOutAgentTestHarness() {
 	const backends: FakeNativeBackend[] = [];
 	const client = new FakeClient();
 
-	const agent = new CursorAcpAgent(client as any, {
+	const agent = new CursorAcpAgent(client, {
 		auth: {
 			async status() {
 				return { loggedIn: false as const, raw: "" };
@@ -331,7 +353,21 @@ function createLoggedOutAgentTestHarness() {
 			async listModels() {
 				return [{ modelId: "auto", name: "Auto", current: true }];
 			},
-		} as any,
+			async createChat() {
+				return "legacy-chat-1";
+			},
+			startPrompt() {
+				return {
+					completed: Promise.resolve({
+						events: [],
+						resultEvent: { type: "result", subtype: "success", is_error: false },
+						stderr: "",
+						exitCode: 0,
+					}),
+					cancel() {},
+				};
+			},
+		},
 		createNativeClient(options, callbacks) {
 			const backend = new FakeNativeBackend(options, callbacks, backends.length + 1);
 			backends.push(backend);
@@ -343,8 +379,7 @@ function createLoggedOutAgentTestHarness() {
 }
 
 async function startNativeBackend(agent: CursorAcpAgent, sessionId: string): Promise<void> {
-	const session = (agent as any).sessions[sessionId];
-	await (agent as any).ensureBackend(session);
+	await ensureNativeBackend(agent, sessionId);
 }
 
 async function waitForScheduledUpdates(): Promise<void> {
@@ -375,44 +410,44 @@ describe("CursorAcpAgent", () => {
 	it("handles adapter slash commands without invoking native prompt", async () => {
 		const { agent, client, legacyPromptCalls } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 
 		const response = await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "/status" }],
-		} as any);
+		}));
 
 		expect(response.stopReason).toBe("end_turn");
 		expect(legacyPromptCalls).toHaveLength(0);
 		expect(client.updates.some((u) => u.update?.sessionUpdate === "agent_message_chunk")).toBe(
 			true,
-		);
+		));
 	});
 
 	it("loads native slash commands during newSession when authenticated", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		await agent.newSession({
+		}));
+		await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		});
 		await waitForScheduledUpdates();
 
 		expect(backends).toHaveLength(1);
 		const commandsUpdate = client.updates.find(
 			(update) => update.update?.sessionUpdate === "available_commands_update",
-		);
+		));
 		const names = commandsUpdate?.update?.availableCommands?.map(
 			(command: any) => command.name,
 		);
@@ -424,47 +459,47 @@ describe("CursorAcpAgent", () => {
 	it("forwards colliding slash commands to the native backend", async () => {
 		const { agent, legacyPromptCalls } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 
 		const response = await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "/mode plan" }],
-		} as any);
+		}));
 
 		expect(response.stopReason).toBe("end_turn");
 		expect(legacyPromptCalls.map((call) => call.promptText)).toEqual(["/mode plan"]);
-		expect((agent as any).sessions[session.sessionId]?.modeId).toBe("default");
+		expect(agentTestAccess(agent).sessions[session.sessionId]?.modeId).toBe("default");
 	});
 
 	it("forwards native slash commands when advertised with a leading slash", async () => {
 		const { agent, legacyPromptCalls } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 
-		(agent as any).sessions[session.sessionId].nativeAvailableCommands = [
+		agentTestAccess(agent).sessions[session.sessionId].nativeAvailableCommands = [
 			{ name: "/mode", description: "Native mode", input: null },
 		];
 
 		const response = await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "/mode ask" }],
-		} as any);
+		}));
 
 		expect(response.stopReason).toBe("end_turn");
 		expect(legacyPromptCalls.map((call) => call.promptText)).toEqual(["/mode ask"]);
@@ -473,24 +508,24 @@ describe("CursorAcpAgent", () => {
 	it("forwards native mcp slash commands across equivalent spellings", async () => {
 		const { agent, legacyPromptCalls } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 
-		(agent as any).sessions[session.sessionId].nativeAvailableCommands = [
+		agentTestAccess(agent).sessions[session.sessionId].nativeAvailableCommands = [
 			{ name: "mcp:github:issue", description: "MCP issue helper", input: null },
 		];
 
 		const response = await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "/mcp:github:issue 123" }],
-		} as any);
+		}));
 
 		expect(response.stopReason).toBe("end_turn");
 		expect(legacyPromptCalls.map((call) => call.promptText)).toEqual(["/mcp:github:issue 123"]);
@@ -499,20 +534,20 @@ describe("CursorAcpAgent", () => {
 	it("merges native available commands with wrapper built-ins", async () => {
 		const { agent, client } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		const commandsUpdate = client.updates.find(
 			(update) => update.update?.sessionUpdate === "available_commands_update",
-		);
+		));
 		const names = commandsUpdate?.update?.availableCommands?.map(
 			(command: any) => command.name,
 		);
@@ -525,14 +560,14 @@ describe("CursorAcpAgent", () => {
 	it("forwards native Cursor extension methods to the outer client with wrapper session id", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 
 		client.extMethodResponses["cursor/ask_question"] = { picked: "a" };
@@ -540,7 +575,7 @@ describe("CursorAcpAgent", () => {
 		const result = await backend.simulateNativeExtMethod("cursor/ask_question", {
 			sessionId: backend.nativeSessionId,
 			questionId: "q1",
-		});
+		}));
 
 		expect(result).toEqual({ picked: "a" });
 		expect(client.extMethodCalls).toEqual([
@@ -553,7 +588,7 @@ describe("CursorAcpAgent", () => {
 		await backend.simulateNativeExtNotification("cursor/update_todos", {
 			sessionId: backend.nativeSessionId,
 			todos: [],
-		});
+		}));
 		expect(client.extNotificationCalls).toEqual([
 			{
 				method: "cursor/update_todos",
@@ -565,15 +600,15 @@ describe("CursorAcpAgent", () => {
 	it("creates sessions before auth and defers native backend startup until first prompt", async () => {
 		const { agent, backends } = createLoggedOutAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
+		});
 
-		const session = await agent.newSession({
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 
 		expect(session.models?.currentModelId).toBe("auto");
 		expect(backends).toHaveLength(0);
@@ -582,7 +617,7 @@ describe("CursorAcpAgent", () => {
 			agent.prompt({
 				sessionId: session.sessionId,
 				prompt: [{ type: "text", text: "hello" }],
-			} as any),
+			}),
 		).rejects.toThrow("Authentication required");
 
 		expect(backends).toHaveLength(0);
@@ -591,15 +626,15 @@ describe("CursorAcpAgent", () => {
 	it("exposes listed models in newSession model listing", async () => {
 		const { agent } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
+		});
 
-		const session = await agent.newSession({
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 
 		expect(session.models?.currentModelId).toBe("auto");
 		expect(session.models?.availableModels.map((model) => model.modelId)).toEqual([
@@ -611,21 +646,53 @@ describe("CursorAcpAgent", () => {
 		]);
 	});
 
+	it("returns newSession without waiting for native backend warm-up", async () => {
+		let unblockWarmup!: () => void;
+		const createSessionBlocker = new Promise<void>((resolve) => {
+			unblockWarmup = resolve;
+		});
+		const { agent, backends } = createAgentTestHarness({ createSessionBlocker });
+
+		await agent.initialize(initRequest({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		}));
+
+		const newSessionPromise = agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		await expect(
+			Promise.race([
+				newSessionPromise.then((session) => session.models?.currentModelId),
+				new Promise((resolve) => setTimeout(() => resolve("blocked"), 20)),
+			]),
+		).resolves.toBe("auto");
+		expect(backends[0]!.createCalls).toBe(1);
+
+		unblockWarmup();
+		await newSessionPromise;
+		await waitForScheduledUpdates();
+	});
+
 	it("prefers CLI model ids over native config-style model ids to avoid duplicates", async () => {
 		const { agent } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
+		});
 
-		const session = await agent.newSession({
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		});
 
-		const internalSession = (agent as any).sessions[session.sessionId];
-		await (agent as any).applyNativeSessionModelsAndModes(internalSession, {
+		const internalSession = agentTestAccess(agent).sessions[session.sessionId];
+		await (agent).applyNativeSessionModelsAndModes(internalSession, {
 			models: {
 				currentModelId: "default[]",
 				availableModels: [
@@ -642,7 +709,7 @@ describe("CursorAcpAgent", () => {
 					},
 				],
 			},
-		});
+		}));
 
 		expect(internalSession.nativeSessionModels.currentModelId).toBe("auto");
 		expect(
@@ -659,15 +726,15 @@ describe("CursorAcpAgent", () => {
 	it("uses default mode by default", async () => {
 		const { agent } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
+		});
 
-		const session = await agent.newSession({
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 
 		expect(session.modes?.currentModeId).toBe("default");
 	});
@@ -675,16 +742,16 @@ describe("CursorAcpAgent", () => {
 	it("honors requested yolo mode when creating a new session", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
+		});
 
-		const session = await agent.newSession({
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
 			modeId: "yolo",
-		} as any);
+		}));
 
 		expect(session.modes?.currentModeId).toBe("yolo");
 
@@ -704,7 +771,7 @@ describe("CursorAcpAgent", () => {
 					title: "`pwd`",
 					rawInput: { command: "pwd" },
 				},
-			} as any);
+			});
 			expect(response).toMatchObject({
 				outcome: {
 					outcome: "selected",
@@ -717,7 +784,7 @@ describe("CursorAcpAgent", () => {
 		await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "run pwd" }],
-		} as any);
+		}));
 
 		expect(client.permissionCalls).toHaveLength(0);
 	});
@@ -725,16 +792,16 @@ describe("CursorAcpAgent", () => {
 	it("accepts snake_case default_mode from ACP clients", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
+		});
 
-		const session = await agent.newSession({
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
 			default_mode: "yolo",
-		} as any);
+		}));
 
 		expect(session.modes?.currentModeId).toBe("yolo");
 
@@ -754,7 +821,7 @@ describe("CursorAcpAgent", () => {
 					title: "`pwd`",
 					rawInput: { command: "pwd" },
 				},
-			} as any);
+			});
 			expect(response).toMatchObject({
 				outcome: {
 					outcome: "selected",
@@ -767,7 +834,7 @@ describe("CursorAcpAgent", () => {
 		await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "run pwd" }],
-		} as any);
+		}));
 
 		expect(client.permissionCalls).toHaveLength(0);
 	});
@@ -775,16 +842,16 @@ describe("CursorAcpAgent", () => {
 	it("accepts snake_case default_model from ACP clients", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
+		});
 
-		const session = await agent.newSession({
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
 			default_model: "gpt-5.2",
-		} as any);
+		}));
 
 		expect(session.models?.currentModelId).toBe("gpt-5.2");
 
@@ -795,16 +862,16 @@ describe("CursorAcpAgent", () => {
 	it("normalizes legacy default_model syntax from ACP clients", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
+		});
 
-		const session = await agent.newSession({
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
 			default_model: "gpt-5.4-medium[fast=true]",
-		} as any);
+		}));
 
 		expect(session.models?.currentModelId).toBe("gpt-5.4-medium-fast");
 
@@ -812,36 +879,208 @@ describe("CursorAcpAgent", () => {
 		expect(backends[0]!.options.modelId).toBe("gpt-5.4-medium-fast");
 	});
 
+	it("accepts default_config_options mode and model from ACP clients", async () => {
+		const { agent } = createAgentTestHarness();
+
+		await agent.initialize(initRequest({
+			protocolVersion: 1,
+			clientCapabilities: {},
+		});
+
+		const session = await agent.newSession(newSessionRequest({
+			cwd: "/tmp",
+			mcpServers: [],
+			default_config_options: {
+				mode: "yolo",
+				model: "gpt-5.2",
+			},
+		}));
+
+		expect(session.modes?.currentModeId).toBe("yolo");
+		expect(session.models?.currentModelId).toBe("gpt-5.2");
+		expect(session.configOptions?.find((option) => option.id === "mode")?.currentValue).toBe(
+			"yolo",
+		));
+		expect(session.configOptions?.find((option) => option.id === "model")?.currentValue).toBe(
+			"gpt-5.2",
+		);
+	});
+
+	it("uses default_mode from initialize _meta when newSession omits it", async () => {
+		const { agent } = createAgentTestHarness();
+
+		await agent.initialize(initRequest({
+			protocolVersion: 1,
+			clientCapabilities: {},
+			_meta: { default_mode: "yolo" },
+		});
+
+		const session = await agent.newSession(newSessionRequest({
+			cwd: "/tmp",
+			mcpServers: [],
+		}));
+
+		expect(session.modes?.currentModeId).toBe("yolo");
+	});
+
+	it("uses default_config_options from initialize when newSession omits them", async () => {
+		const { agent } = createAgentTestHarness();
+
+		await agent.initialize(initRequest({
+			protocolVersion: 1,
+			clientCapabilities: {
+				_meta: {
+					default_config_options: {
+						mode: "yolo",
+						model: "gpt-5.2",
+					},
+				},
+			},
+		});
+
+		const session = await agent.newSession(newSessionRequest({
+			cwd: "/tmp",
+			mcpServers: [],
+		}));
+
+		expect(session.modes?.currentModeId).toBe("yolo");
+		expect(session.models?.currentModelId).toBe("gpt-5.2");
+	});
+
+	it("uses default_model from initialize clientCapabilities._meta when newSession omits it", async () => {
+		const { agent, backends } = createAgentTestHarness();
+
+		await agent.initialize(initRequest({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { default_model: "gpt-5.2" } },
+		});
+
+		const session = await agent.newSession(newSessionRequest({
+			cwd: "/tmp",
+			mcpServers: [],
+		}));
+
+		expect(session.models?.currentModelId).toBe("gpt-5.2");
+
+		await startNativeBackend(agent, session.sessionId);
+		expect(backends[0]!.options.modelId).toBe("gpt-5.2");
+	});
+
+	it("keeps configured default model when native session reports auto", async () => {
+		const { agent, backends } = createAgentTestHarness({ createCurrentModelId: "auto" });
+
+		await agent.initialize(initRequest({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { default_model: "gpt-5.2" } },
+		});
+
+		const session = await agent.newSession(newSessionRequest({
+			cwd: "/tmp",
+			mcpServers: [],
+		}));
+
+		expect(backends[0]!.options.modelId).toBe("gpt-5.2");
+		expect(session.models?.currentModelId).toBe("gpt-5.2");
+		expect(session.configOptions?.find((option) => option.id === "model")?.currentValue).toBe(
+			"gpt-5.2",
+		));
+	});
+
+	it("keeps configured plan mode when native session initially reports agent", async () => {
+		const { agent, backends } = createAgentTestHarness({ createCurrentModeId: "agent" });
+
+		await agent.initialize(initRequest({
+			protocolVersion: 1,
+			clientCapabilities: {},
+			_meta: { default_mode: "plan" },
+		});
+
+		const session = await agent.newSession(newSessionRequest({
+			cwd: "/tmp",
+			mcpServers: [],
+		}));
+
+		expect(session.modes?.currentModeId).toBe("plan");
+		expect(session.configOptions?.find((option) => option.id === "mode")?.currentValue).toBe(
+			"plan",
+		));
+		await awaitNativeWarmup(agent, session.sessionId);
+		expect(backends[0]!.modeCalls).toEqual(["plan"]);
+	});
+
+	it("uses environment variables as ultimate fallback for defaults", async () => {
+		process.env.CURSOR_ACP_DEFAULT_MODE = "yolo";
+		process.env.CURSOR_ACP_DEFAULT_MODEL = "gpt-5.4-medium";
+		try {
+			const { agent } = createAgentTestHarness();
+
+			await agent.initialize(initRequest({
+				protocolVersion: 1,
+				clientCapabilities: {},
+			});
+
+			const session = await agent.newSession(newSessionRequest({
+				cwd: "/tmp",
+				mcpServers: [],
+			});
+
+			expect(session.modes?.currentModeId).toBe("yolo");
+			expect(session.models?.currentModelId).toBe("gpt-5.4-medium");
+		} finally {
+			delete process.env.CURSOR_ACP_DEFAULT_MODE;
+			delete process.env.CURSOR_ACP_DEFAULT_MODEL;
+		}
+	});
+
+	it("newSession params override initialize defaults", async () => {
+		const { agent } = createAgentTestHarness();
+
+		await agent.initialize(initRequest({
+			protocolVersion: 1,
+			clientCapabilities: {},
+			_meta: { default_mode: "plan" },
+		});
+
+		const session = await agent.newSession(newSessionRequest({
+			cwd: "/tmp",
+			mcpServers: [],
+			default_mode: "yolo",
+		}));
+
+		expect(session.modes?.currentModeId).toBe("yolo");
+	});
+
 	it("applies mode changes to the warmed native backend before first prompt", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		});
 
 		await agent.setSessionMode({
 			sessionId: session.sessionId,
 			modeId: "plan",
-		} as any);
+		}));
 
 		expect(backends).toHaveLength(1);
+		await awaitNativeWarmup(agent, session.sessionId);
 		expect(backends[0]!.modeCalls).toEqual(["plan"]);
 	});
 
 	it("reports terminal auth metadata using the configured native command", async () => {
-		const agent = new CursorAcpAgent({} as any, {
+		const agent = new CursorAcpAgent(new FakeClient(), {
 			nativeCommand: "cursor-agent",
 		});
 
-		const response = await agent.initialize({
+		const response = await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: { _meta: { "terminal-auth": true } },
-		} as any);
+		}));
 
 		expect(response.authMethods?.[0]?._meta?.["terminal-auth"]).toMatchObject({
 			command: "cursor-agent",
@@ -852,21 +1091,21 @@ describe("CursorAcpAgent", () => {
 	it("restarts the warmed backend when /model runs before first prompt", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		});
 
-		const recordSpy = vi.spyOn(agent as any, "restartBackend");
+		const recordSpy = vi.spyOn(agentTestAccess(agent), "restartBackend");
 
 		const response = await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "/model gpt-5.4-medium" }],
-		} as any);
+		}));
 
 		expect(response.stopReason).toBe("end_turn");
 		expect(backends).toHaveLength(2);
@@ -879,27 +1118,27 @@ describe("CursorAcpAgent", () => {
 	it("accepts /model fast variants before first prompt and restarts the warmed backend", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		});
 
-		const restartSpy = vi.spyOn(agent as any, "restartBackend");
+		const restartSpy = vi.spyOn(agentTestAccess(agent), "restartBackend");
 
 		const response = await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "/model gpt-5.4-medium-fast" }],
-		} as any);
+		}));
 
 		expect(response.stopReason).toBe("end_turn");
 		expect(backends).toHaveLength(2);
 		expect(restartSpy).toHaveBeenCalledOnce();
 		expect(backends[1]!.options.modelId).toBe("gpt-5.4-medium-fast");
-		expect((agent as any).sessions[session.sessionId]?.modelId).toBe("gpt-5.4-medium-fast");
+		expect(agentTestAccess(agent).sessions[session.sessionId]?.modelId).toBe("gpt-5.4-medium-fast");
 
 		restartSpy.mockRestore();
 	});
@@ -907,27 +1146,27 @@ describe("CursorAcpAgent", () => {
 	it("accepts legacy /model fast syntax before first prompt and restarts the warmed backend", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		});
 
-		const restartSpy = vi.spyOn(agent as any, "restartBackend");
+		const restartSpy = vi.spyOn(agentTestAccess(agent), "restartBackend");
 
 		const response = await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "/model gpt-5.4-medium[fast=true]" }],
-		} as any);
+		}));
 
 		expect(response.stopReason).toBe("end_turn");
 		expect(backends).toHaveLength(2);
 		expect(restartSpy).toHaveBeenCalledOnce();
 		expect(backends[1]!.options.modelId).toBe("gpt-5.4-medium-fast");
-		expect((agent as any).sessions[session.sessionId]?.modelId).toBe("gpt-5.4-medium-fast");
+		expect(agentTestAccess(agent).sessions[session.sessionId]?.modelId).toBe("gpt-5.4-medium-fast");
 
 		restartSpy.mockRestore();
 	});
@@ -935,14 +1174,14 @@ describe("CursorAcpAgent", () => {
 	it("forwards permission requests in default mode", async () => {
 		const { agent, client, setLegacyPromptHandler } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		});
 
 		setLegacyPromptHandler(async (_promptText, options) => {
 			await options.onEvent?.({
@@ -972,12 +1211,12 @@ describe("CursorAcpAgent", () => {
 				stderr: "",
 				exitCode: 0,
 			};
-		});
+		}));
 
 		await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "run pwd" }],
-		} as any);
+		}));
 
 		expect(client.permissionCalls).toHaveLength(1);
 	});
@@ -985,19 +1224,19 @@ describe("CursorAcpAgent", () => {
 	it("auto-approves permission requests in yolo mode", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 		await agent.setSessionMode({
 			sessionId: session.sessionId,
 			modeId: "yolo",
-		} as any);
+		});
 
 		backends[0]!.promptHandler = async () => {
 			const response = await backends[0]!.callbacks.onRequestPermission({
@@ -1014,7 +1253,7 @@ describe("CursorAcpAgent", () => {
 					title: "`pwd`",
 					rawInput: { command: "pwd" },
 				},
-			} as any);
+			});
 			expect(response.outcome.outcome).toBe("selected");
 			expect(response).toMatchObject({
 				outcome: {
@@ -1028,7 +1267,7 @@ describe("CursorAcpAgent", () => {
 		await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "run pwd" }],
-		} as any);
+		}));
 
 		expect(client.permissionCalls).toHaveLength(0);
 	});
@@ -1036,19 +1275,19 @@ describe("CursorAcpAgent", () => {
 	it("auto-approves edit-with-diff permission requests in yolo mode", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 		await agent.setSessionMode({
 			sessionId: session.sessionId,
 			modeId: "yolo",
-		} as any);
+		});
 
 		backends[0]!.promptHandler = async () => {
 			const response = await backends[0]!.callbacks.onRequestPermission({
@@ -1078,7 +1317,7 @@ describe("CursorAcpAgent", () => {
 						},
 					],
 				},
-			} as any);
+			});
 			expect(response).toMatchObject({
 				outcome: { outcome: "selected", optionId: "approved" },
 			});
@@ -1088,7 +1327,7 @@ describe("CursorAcpAgent", () => {
 		await agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "change foo" }],
-		} as any);
+		}));
 
 		expect(client.permissionCalls).toHaveLength(0);
 	});
@@ -1096,20 +1335,20 @@ describe("CursorAcpAgent", () => {
 	it("maps wrapper plan mode to native plan mode and emits updates", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 
 		await agent.setSessionMode({
 			sessionId: session.sessionId,
 			modeId: "plan",
-		} as any);
+		}));
 
 		expect(backends[0]!.modeCalls).toContain("plan");
 		expect(
@@ -1124,20 +1363,20 @@ describe("CursorAcpAgent", () => {
 	it("restarts the native backend when the model changes while idle", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 
 		await agent.unstable_setSessionModel({
 			sessionId: session.sessionId,
 			modelId: "gpt-5.4-medium",
-		} as any);
+		}));
 
 		expect(backends).toHaveLength(2);
 		expect(backends[0]!.closeCalls).toBe(1);
@@ -1147,20 +1386,20 @@ describe("CursorAcpAgent", () => {
 	it("passes fast model ids through to native backend restart", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 
 		await agent.unstable_setSessionModel({
 			sessionId: session.sessionId,
 			modelId: "gpt-5.4-medium-fast",
-		} as any);
+		}));
 
 		expect(backends).toHaveLength(2);
 		expect(backends[0]!.closeCalls).toBe(1);
@@ -1170,20 +1409,20 @@ describe("CursorAcpAgent", () => {
 	it("normalizes legacy fast model ids before native backend restart", async () => {
 		const { agent, backends } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 
 		await agent.unstable_setSessionModel({
 			sessionId: session.sessionId,
 			modelId: "gpt-5.4-medium[fast=true]",
-		} as any);
+		}));
 
 		expect(backends).toHaveLength(2);
 		expect(backends[0]!.closeCalls).toBe(1);
@@ -1193,14 +1432,14 @@ describe("CursorAcpAgent", () => {
 	it("normalizes native execute tool calls to text when terminal_output is unsupported", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 
 		await backends[0]!.callbacks.onSessionUpdate({
@@ -1222,7 +1461,7 @@ describe("CursorAcpAgent", () => {
 					},
 				},
 			},
-		} as any);
+		});
 
 		await backends[0]!.callbacks.onSessionUpdate({
 			sessionId: backends[0]!.nativeSessionId!,
@@ -1245,7 +1484,7 @@ describe("CursorAcpAgent", () => {
 					},
 				},
 			},
-		} as any);
+		});
 
 		const started = client.updates.find((u) => u.update?.toolCallId === "t1");
 		expect(started?.update?.title).toBe("`pwd`");
@@ -1271,14 +1510,14 @@ describe("CursorAcpAgent", () => {
 	it("still normalizes shell-like terminal updates to text even when terminal_output is supported", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: { _meta: { terminal_output: true } },
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		}));
 		await startNativeBackend(agent, session.sessionId);
 
 		await backends[0]!.callbacks.onSessionUpdate({
@@ -1300,7 +1539,7 @@ describe("CursorAcpAgent", () => {
 					},
 				},
 			},
-		} as any);
+		});
 
 		const started = client.updates.find((u) => u.update?.toolCallId === "t2");
 		expect(started?.update?.content).toEqual([
@@ -1315,14 +1554,14 @@ describe("CursorAcpAgent", () => {
 	it("rejects a second prompt while one is in progress", async () => {
 		const { agent, legacyPromptCalls, setLegacyPromptHandler } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		});
 
 		let resolvePrompt: (() => void) | undefined;
 		setLegacyPromptHandler(
@@ -1336,12 +1575,12 @@ describe("CursorAcpAgent", () => {
 							exitCode: 0,
 						});
 				}),
-		);
+		));
 
 		const first = agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "run something" }],
-		} as any);
+		});
 		while (legacyPromptCalls.length === 0) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
@@ -1350,7 +1589,7 @@ describe("CursorAcpAgent", () => {
 			agent.prompt({
 				sessionId: session.sessionId,
 				prompt: [{ type: "text", text: "second" }],
-			} as any),
+			}),
 		).rejects.toThrow(/another prompt is in progress/);
 
 		resolvePrompt?.();
@@ -1360,14 +1599,14 @@ describe("CursorAcpAgent", () => {
 	it("rejects model changes while a prompt is active", async () => {
 		const { agent, legacyPromptCalls, setLegacyPromptHandler } = createAgentTestHarness();
 
-		await agent.initialize({
+		await agent.initialize(initRequest({
 			protocolVersion: 1,
 			clientCapabilities: {},
-		} as any);
-		const session = await agent.newSession({
+		}));
+		const session = await agent.newSession(newSessionRequest({
 			cwd: "/tmp",
 			mcpServers: [],
-		} as any);
+		});
 
 		let resolvePrompt: (() => void) | undefined;
 		setLegacyPromptHandler(
@@ -1381,12 +1620,12 @@ describe("CursorAcpAgent", () => {
 							exitCode: 0,
 						});
 				}),
-		);
+		));
 
 		const promptPromise = agent.prompt({
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "run something" }],
-		} as any);
+		});
 		while (legacyPromptCalls.length === 0) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
@@ -1395,7 +1634,7 @@ describe("CursorAcpAgent", () => {
 			agent.unstable_setSessionModel({
 				sessionId: session.sessionId,
 				modelId: "gpt-5.4-medium",
-			} as any),
+			}),
 		).rejects.toThrow("Invalid params");
 
 		resolvePrompt?.();
@@ -1412,15 +1651,15 @@ describe("CursorAcpAgent", () => {
 			await recordUserMessage("/tmp/project", "session-1", "hello");
 			await recordAssistantMessage("/tmp/project", "session-1", "world");
 
-			await agent.initialize({
+			await agent.initialize(initRequest({
 				protocolVersion: 1,
 				clientCapabilities: {},
-			} as any);
+			});
 			await agent.unstable_resumeSession({
 				sessionId: "session-1",
 				cwd: "/tmp/project",
 				mcpServers: [],
-			} as any);
+			});
 			await waitForScheduledUpdates();
 
 			expect(backends).toHaveLength(0);
@@ -1445,22 +1684,26 @@ describe("CursorAcpAgent", () => {
 
 			await recordUserMessage("/tmp/project", "session-1", "hello");
 			await recordAssistantMessage("/tmp/project", "session-1", "world");
-			await recordSessionMeta("/tmp/project", "session-1", "be-native-1");
+			await recordSessionMeta("/tmp/project", "session-1", {
+				backendSessionId: "be-native-1",
+				modeId: "yolo",
+			}));
 
-			await agent.initialize({
+			await agent.initialize(initRequest({
 				protocolVersion: 1,
 				clientCapabilities: {},
-			} as any);
-			await agent.unstable_resumeSession({
+			});
+			const response = await agent.unstable_resumeSession({
 				sessionId: "session-1",
 				cwd: "/tmp/project",
 				mcpServers: [],
-			} as any);
+			});
 			await waitForScheduledUpdates();
 
 			expect(backends).toHaveLength(1);
 			expect(backends[0]!.loadCalls).toEqual(["be-native-1"]);
 			expect(backends[0]!.createCalls).toBe(0);
+			expect(response.modes?.currentModeId).toBe("yolo");
 			expect(
 				client.updates.filter((u) => u.update?.sessionUpdate === "user_message_chunk"),
 			).toHaveLength(1);
@@ -1482,21 +1725,25 @@ describe("CursorAcpAgent", () => {
 
 			await recordUserMessage("/tmp/project", "session-1", "hello");
 			await recordAssistantMessage("/tmp/project", "session-1", "world");
-			await recordSessionMeta("/tmp/project", "session-1", "be-native-1");
+			await recordSessionMeta("/tmp/project", "session-1", {
+				backendSessionId: "be-native-1",
+				modeId: "yolo",
+			}));
 
-			await agent.initialize({
+			await agent.initialize(initRequest({
 				protocolVersion: 1,
 				clientCapabilities: {},
-			} as any);
+			});
 			const response = await agent.loadSession({
 				sessionId: "session-1",
 				cwd: "/tmp/project",
 				mcpServers: [],
-			} as any);
+			});
 			await waitForScheduledUpdates();
 
 			expect(backends).toHaveLength(1);
 			expect(backends[0]!.loadCalls).toEqual(["be-native-1"]);
+			expect(response.modes?.currentModeId).toBe("yolo");
 			expect(response.models?.currentModelId).toBe("gpt-5.4-medium");
 			expect(response.models?.availableModels.map((model) => model.modelId)).toEqual([
 				"auto",

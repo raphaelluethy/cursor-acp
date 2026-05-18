@@ -1,6 +1,5 @@
 import {
 	Agent,
-	AgentSideConnection,
 	AuthenticateRequest,
 	AvailableCommand,
 	CancelNotification,
@@ -26,6 +25,9 @@ import {
 	SetSessionModelResponse,
 	SetSessionModeRequest,
 	SetSessionModeResponse,
+	SetSessionConfigOptionRequest,
+	SetSessionConfigOptionResponse,
+	SessionConfigOption,
 	SessionNotification,
 	ToolCallContent,
 	WriteTextFileRequest,
@@ -33,7 +35,15 @@ import {
 } from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
+import {
+	ExtendedInitializeRequest,
+	ExtendedNewSessionRequest,
+	looseSessionDefaults,
+	type LooseSessionDefaults,
+} from "./acp-request-extensions.js";
 import { CursorAuth, CursorAuthClient } from "./auth.js";
+import type { CursorAcpClient } from "./cursor-acp-client.js";
+import { getDefaultCursorAgentCommand } from "./cursor-agent-command.js";
 import { CachedToolUse, mapCursorEventToAcp, RejectedToolCall } from "./cursor-event-mapper.js";
 import {
 	CreateNativeSessionOptions,
@@ -42,7 +52,7 @@ import {
 	NativeSessionBackend,
 	NativeSessionCallbacks,
 } from "./cursor-native-acp-client.js";
-import { CursorCliRunner } from "./cursor-cli-runner.js";
+import { CursorCliRunner, type CursorCliRunnerLike } from "./cursor-cli-runner.js";
 import { normalizeModelId, resolveModelId } from "./model-id.js";
 import { parseLeadingSlashCommand, promptToCursorText } from "./prompt-conversion.js";
 import {
@@ -51,7 +61,14 @@ import {
 	handleSlashCommand,
 	normalizeSlashCommandName,
 } from "./slash-commands.js";
-import { availableModes, DEFAULT_MODE_ID, normalizeModeId, SessionModeId } from "./settings.js";
+import {
+	availableModes,
+	DEFAULT_MODE_ID,
+	getEnvDefaultMode,
+	getEnvDefaultModel,
+	normalizeModeId,
+	SessionModeId,
+} from "./settings.js";
 import {
 	findSessionFile,
 	getCursorAcpConfigDir,
@@ -94,7 +111,23 @@ function plainTextContent(text: string): ToolCallContent[] {
 	];
 }
 
-function summarizeExecuteToolCall(update: Record<string, any>): ToolCallContent[] | undefined {
+type ToolSessionUpdate = Extract<
+	SessionNotification["update"],
+	{ sessionUpdate: "tool_call" } | { sessionUpdate: "tool_call_update" }
+>;
+
+type ExecuteToolUpdate = ToolSessionUpdate & {
+	rawInput?: { command?: string; description?: string };
+	rawOutput?: string;
+	_meta?: {
+		terminal_info?: { cwd?: string };
+		terminal_output?: unknown;
+		terminal_exit?: unknown;
+		[key: string]: unknown;
+	};
+};
+
+function summarizeExecuteToolCall(update: ExecuteToolUpdate): ToolCallContent[] | undefined {
 	const rawInput = update.rawInput;
 	if (!rawInput || typeof rawInput !== "object") {
 		return undefined;
@@ -116,7 +149,7 @@ function summarizeExecuteToolCall(update: Record<string, any>): ToolCallContent[
 	return plainTextContent(lines.join("\n"));
 }
 
-function summarizeExecuteToolResult(update: Record<string, any>): ToolCallContent[] | undefined {
+function summarizeExecuteToolResult(update: ExecuteToolUpdate): ToolCallContent[] | undefined {
 	const rawOutput = update.rawOutput;
 	if (typeof rawOutput === "string") {
 		return plainTextContent(markdownEscape(rawOutput || "Command completed with no output."));
@@ -132,15 +165,16 @@ function normalizeNativeToolUpdateForClient(
 	if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") {
 		return update;
 	}
-	const rawInput = (update as Record<string, any>).rawInput;
+	const toolUpdate = update as ExecuteToolUpdate;
+	const rawInput = toolUpdate.rawInput;
 	const command =
 		rawInput && typeof rawInput === "object" && typeof rawInput.command === "string"
 			? rawInput.command
 			: "";
 	const hasTerminalMeta = Boolean(
-		(update as Record<string, any>)._meta?.terminal_info ||
-		(update as Record<string, any>)._meta?.terminal_output ||
-		(update as Record<string, any>)._meta?.terminal_exit,
+		toolUpdate._meta?.terminal_info ||
+		toolUpdate._meta?.terminal_output ||
+		toolUpdate._meta?.terminal_exit,
 	);
 	const looksLikeShellTool =
 		command.length > 0 ||
@@ -150,7 +184,7 @@ function normalizeNativeToolUpdateForClient(
 		return update;
 	}
 
-	const next: Record<string, any> = { ...update };
+	const next: ExecuteToolUpdate = { ...toolUpdate };
 	if (update.sessionUpdate === "tool_call") {
 		const content = summarizeExecuteToolCall(next);
 		if (content) {
@@ -164,7 +198,7 @@ function normalizeNativeToolUpdateForClient(
 		const hasOnlyTerminalContent =
 			Array.isArray(next.content) &&
 			next.content.length > 0 &&
-			next.content.every((item: any) => item?.type === "terminal");
+			next.content.every((item) => item.type === "terminal");
 		if (hasOnlyTerminalContent || !Array.isArray(next.content) || next.content.length === 0) {
 			const content = summarizeExecuteToolResult(next);
 			if (content) {
@@ -197,6 +231,70 @@ function appendDebugLog(label: string, value: unknown): void {
 	} catch {}
 }
 
+function pickNormalizedModeId(...candidates: unknown[]): SessionModeId | undefined {
+	for (const candidate of candidates) {
+		if (typeof candidate !== "string") {
+			continue;
+		}
+		const normalized = normalizeModeId(candidate.trim());
+		if (normalized) {
+			return normalized;
+		}
+	}
+	return undefined;
+}
+
+function pickNormalizedModelId(...candidates: unknown[]): string | undefined {
+	for (const candidate of candidates) {
+		if (typeof candidate !== "string") {
+			continue;
+		}
+		const trimmed = normalizeModelId(candidate);
+		if (trimmed.length > 0) {
+			return trimmed;
+		}
+	}
+	return undefined;
+}
+
+function modeCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
+	return [
+		raw.modeId,
+		raw.mode_id,
+		raw.mode,
+		raw.defaultModeId,
+		raw.default_mode,
+		raw.defaultConfigOptions?.mode,
+		raw.default_config_options?.mode,
+		raw._meta?.modeId,
+		raw._meta?.mode_id,
+		raw._meta?.mode,
+		raw._meta?.defaultModeId,
+		raw._meta?.default_mode,
+		raw._meta?.defaultConfigOptions?.mode,
+		raw._meta?.default_config_options?.mode,
+	];
+}
+
+function modelCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
+	return [
+		raw.modelId,
+		raw.model_id,
+		raw.model,
+		raw.defaultModelId,
+		raw.default_model,
+		raw.defaultConfigOptions?.model,
+		raw.default_config_options?.model,
+		raw._meta?.modelId,
+		raw._meta?.model_id,
+		raw._meta?.model,
+		raw._meta?.defaultModelId,
+		raw._meta?.default_model,
+		raw._meta?.defaultConfigOptions?.model,
+		raw._meta?.default_config_options?.model,
+	];
+}
+
 interface ActivePromptState {
 	assistantTextChunks: string[];
 	turnArtifacts: TurnArtifact[];
@@ -211,12 +309,13 @@ interface PromptAttemptResult {
 	rejectedToolCalls: RejectedToolCall[];
 }
 
-interface SessionState {
+export interface SessionState {
 	sessionId: string;
 	cwd: string;
 	mcpServers?: NewSessionRequest["mcpServers"];
 	modeId: SessionModeId;
 	modelId?: string;
+	configuredModelId?: string;
 	lastAgentModeId: "default" | "yolo";
 	cancelled: boolean;
 	activePrompt?: ActivePromptState;
@@ -228,12 +327,14 @@ interface SessionState {
 	nativeLoadSucceeded?: boolean;
 	nativeAvailableCommands: AvailableCommand[];
 	nativeClient?: NativeSessionBackend;
+	nativeStartPromise?: Promise<void>;
+	appliedNativeModeId?: NativeModeId;
 	notificationsReady: boolean;
 	pendingNotifications: SessionNotification[];
 }
 
 export interface CursorAcpAgentOptions {
-	runner?: CursorCliRunner;
+	runner?: CursorCliRunnerLike;
 	auth?: CursorAuthClient;
 	logger?: Logger;
 	createNativeClient?: (
@@ -246,8 +347,10 @@ export interface CursorAcpAgentOptions {
 export class CursorAcpAgent implements Agent {
 	private readonly sessions: Record<string, SessionState> = {};
 	private clientCapabilities?: ClientCapabilities;
+	private defaultModeId?: SessionModeId;
+	private defaultModelId?: string;
 
-	private readonly runner: CursorCliRunner;
+	private readonly runner: CursorCliRunnerLike;
 	private readonly auth: CursorAuthClient;
 	private readonly logger: Logger;
 	private readonly createNativeClient: (
@@ -257,7 +360,7 @@ export class CursorAcpAgent implements Agent {
 	private readonly nativeCommand?: string;
 
 	constructor(
-		private readonly client: AgentSideConnection,
+		private readonly client: CursorAcpClient,
 		options: CursorAcpAgentOptions = {},
 	) {
 		this.runner = options.runner ?? new CursorCliRunner();
@@ -273,6 +376,10 @@ export class CursorAcpAgent implements Agent {
 		this.clientCapabilities = request.clientCapabilities;
 		appendDebugLog("initialize.clientCapabilities", request.clientCapabilities ?? null);
 
+		const initDefaults = this.extractInitializeDefaults(request);
+		this.defaultModeId = initDefaults.modeId ?? getEnvDefaultMode();
+		this.defaultModelId = initDefaults.modelId ?? getEnvDefaultModel();
+
 		const authMethod: NonNullable<InitializeResponse["authMethods"]>[number] = {
 			id: "cursor_login",
 			name: "Cursor Login",
@@ -282,7 +389,7 @@ export class CursorAcpAgent implements Agent {
 		if (request.clientCapabilities?._meta?.["terminal-auth"] === true) {
 			authMethod._meta = {
 				"terminal-auth": {
-					command: this.nativeCommand ?? "agent",
+					command: this.nativeCommand ?? getDefaultCursorAgentCommand(),
 					args: ["login"],
 					label: "Cursor CLI Login",
 				},
@@ -342,16 +449,16 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	async unstable_resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+		const filePath = await findSessionFile(params.sessionId, params.cwd);
+		const meta = filePath ? await readSessionMeta(filePath) : {};
 		const response = await this.createSession({
 			sessionId: params.sessionId,
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
+			preferredModeId: meta.modeId,
 		});
 
 		const session = this.requireSession(params.sessionId);
-		const filePath = await findSessionFile(params.sessionId, params.cwd);
-		const meta = filePath ? await readSessionMeta(filePath) : {};
-
 		const loggedIn = (await this.auth.status()).loggedIn;
 
 		return await this.withDeferredSessionNotifications(session, async () => {
@@ -419,6 +526,7 @@ export class CursorAcpAgent implements Agent {
 	}): Promise<{
 		modes: NewSessionResponse["modes"];
 		models: NewSessionResponse["models"];
+		configOptions?: NewSessionResponse["configOptions"];
 	}> {
 		const filePath = await findSessionFile(params.sessionId, params.cwd);
 		if (!filePath) {
@@ -435,17 +543,19 @@ export class CursorAcpAgent implements Agent {
 			return {
 				modes: response.modes,
 				models: response.models,
+				configOptions: response.configOptions,
 			};
 		}
 
+		const meta = await readSessionMeta(filePath);
 		const response = await this.createSession({
 			sessionId: params.sessionId,
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
+			preferredModeId: meta.modeId,
 		});
 
 		const session = this.requireSession(params.sessionId);
-		const meta = await readSessionMeta(filePath);
 
 		const loggedIn = (await this.auth.status()).loggedIn;
 
@@ -466,6 +576,10 @@ export class CursorAcpAgent implements Agent {
 			return {
 				modes: availableModes(session.modeId),
 				models: session.nativeSessionModels ?? response.models,
+				configOptions: this.buildConfigOptions(
+					session,
+					session.nativeSessionModels ?? response.models,
+				),
 			};
 		});
 	}
@@ -498,6 +612,7 @@ export class CursorAcpAgent implements Agent {
 					},
 					onModelChanged: async (modelId) => {
 						session.modelId = modelId;
+						session.configuredModelId = modelId;
 						if (session.nativeClient?.alive) {
 							await this.restartBackend(session);
 						}
@@ -567,7 +682,8 @@ export class CursorAcpAgent implements Agent {
 			}
 
 			if (approved === "allow_always") {
-				session.modeId = "yolo";
+				this.setSessionModeState(session, "yolo");
+				await this.persistSessionMeta(session);
 				await this.client.sessionUpdate({
 					sessionId: session.sessionId,
 					update: {
@@ -601,8 +717,41 @@ export class CursorAcpAgent implements Agent {
 		}
 
 		session.modelId = normalizeModelId(params.modelId);
+		session.configuredModelId = session.modelId;
 		await this.restartBackend(session);
 		return {};
+	}
+
+	async setSessionConfigOption(
+		params: SetSessionConfigOptionRequest,
+	): Promise<SetSessionConfigOptionResponse> {
+		const session = this.requireSession(params.sessionId);
+		if (typeof params.value !== "string") {
+			throw RequestError.invalidParams(
+				`Invalid value for config option ${params.configId}: ${String(params.value)}`,
+			);
+		}
+
+		if (params.configId === "mode") {
+			const modeId = normalizeModeId(params.value);
+			if (!modeId) {
+				throw RequestError.invalidParams(`Invalid mode: ${params.value}`);
+			}
+			await this.applySessionMode(session, modeId);
+			return { configOptions: this.buildConfigOptions(session) };
+		}
+
+		if (params.configId === "model") {
+			if (session.activePrompt || session.activeRun) {
+				throw RequestError.invalidParams("Cannot change model during an active prompt");
+			}
+			session.modelId = normalizeModelId(params.value);
+			session.configuredModelId = session.modelId;
+			await this.restartBackend(session);
+			return { configOptions: this.buildConfigOptions(session) };
+		}
+
+		throw RequestError.invalidParams(`Unknown config option: ${params.configId}`);
 	}
 
 	async extMethod(
@@ -646,13 +795,15 @@ export class CursorAcpAgent implements Agent {
 		preferredModelId?: string;
 		warmNativeBackend?: boolean;
 	}): Promise<NewSessionResponse> {
-		const modeId = params.preferredModeId ?? DEFAULT_MODE_ID;
+		const modeId = params.preferredModeId ?? this.defaultModeId ?? DEFAULT_MODE_ID;
+		const configuredModelId = params.preferredModelId ?? this.defaultModelId;
 		const session: SessionState = {
 			sessionId: params.sessionId,
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
 			modeId,
-			modelId: params.preferredModelId,
+			modelId: configuredModelId,
+			configuredModelId,
 			lastAgentModeId: modeId === "yolo" ? "yolo" : "default",
 			cancelled: false,
 			nativeAvailableCommands: [],
@@ -662,10 +813,10 @@ export class CursorAcpAgent implements Agent {
 
 		this.sessions[session.sessionId] = session;
 
-		const fallbackModels = await this.getAvailableModels(session);
 		if (params.warmNativeBackend) {
-			await this.maybeWarmNativeBackendOnSessionCreate(session);
+			this.startNativeBackendWarmup(session);
 		}
+		const fallbackModels = await this.getAvailableModels(session);
 		session.notificationsReady = true;
 		setTimeout(() => {
 			void this.flushPendingNotifications(session);
@@ -675,7 +826,23 @@ export class CursorAcpAgent implements Agent {
 			sessionId: session.sessionId,
 			models: session.nativeSessionModels ?? fallbackModels,
 			modes: availableModes(session.modeId),
+			configOptions: this.buildConfigOptions(
+				session,
+				session.nativeSessionModels ?? fallbackModels,
+			),
 		};
+	}
+
+	private startNativeBackendWarmup(session: SessionState): void {
+		if (session.nativeClient?.alive || session.nativeStartPromise) {
+			return;
+		}
+
+		session.nativeStartPromise = this.maybeWarmNativeBackendOnSessionCreate(session).finally(
+			() => {
+				session.nativeStartPromise = undefined;
+			},
+		);
 	}
 
 	private async maybeWarmNativeBackendOnSessionCreate(session: SessionState): Promise<void> {
@@ -703,87 +870,29 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	private extractRequestedInitialMode(params: NewSessionRequest): SessionModeId | undefined {
-		const raw = params as unknown as {
-			modeId?: unknown;
-			mode_id?: unknown;
-			mode?: unknown;
-			defaultModeId?: unknown;
-			default_mode?: unknown;
-			_meta?: {
-				modeId?: unknown;
-				mode_id?: unknown;
-				mode?: unknown;
-				defaultModeId?: unknown;
-				default_mode?: unknown;
-			};
-		};
-
-		const candidates = [
-			raw.modeId,
-			raw.mode_id,
-			raw.mode,
-			raw.defaultModeId,
-			raw.default_mode,
-			raw._meta?.modeId,
-			raw._meta?.mode_id,
-			raw._meta?.mode,
-			raw._meta?.defaultModeId,
-			raw._meta?.default_mode,
-		];
-
-		for (const candidate of candidates) {
-			if (typeof candidate !== "string") {
-				continue;
-			}
-			const normalized = normalizeModeId(candidate.trim());
-			if (normalized) {
-				return normalized;
-			}
-		}
-
-		return undefined;
+		return pickNormalizedModeId(...modeCandidatesFrom(looseSessionDefaults(params)));
 	}
 
 	private extractRequestedInitialModel(params: NewSessionRequest): string | undefined {
-		const raw = params as unknown as {
-			modelId?: unknown;
-			model_id?: unknown;
-			model?: unknown;
-			defaultModelId?: unknown;
-			default_model?: unknown;
-			_meta?: {
-				modelId?: unknown;
-				model_id?: unknown;
-				model?: unknown;
-				defaultModelId?: unknown;
-				default_model?: unknown;
-			};
+		return pickNormalizedModelId(...modelCandidatesFrom(looseSessionDefaults(params)));
+	}
+
+	private extractInitializeDefaults(request: InitializeRequest): {
+		modeId?: SessionModeId;
+		modelId?: string;
+	} {
+		const raw = request as ExtendedInitializeRequest;
+
+		return {
+			modeId: pickNormalizedModeId(
+				...modeCandidatesFrom(raw),
+				...modeCandidatesFrom(raw.clientCapabilities?._meta ?? {}),
+			),
+			modelId: pickNormalizedModelId(
+				...modelCandidatesFrom(raw),
+				...modelCandidatesFrom(raw.clientCapabilities?._meta ?? {}),
+			),
 		};
-
-		const candidates = [
-			raw.modelId,
-			raw.model_id,
-			raw.model,
-			raw.defaultModelId,
-			raw.default_model,
-			raw._meta?.modelId,
-			raw._meta?.model_id,
-			raw._meta?.model,
-			raw._meta?.defaultModelId,
-			raw._meta?.default_model,
-		];
-
-		for (const candidate of candidates) {
-			if (typeof candidate !== "string") {
-				continue;
-			}
-			const trimmed = normalizeModelId(candidate);
-			if (trimmed.length > 0) {
-				return trimmed;
-			}
-		}
-
-		return undefined;
 	}
 
 	private async createBackend(
@@ -857,7 +966,7 @@ export class CursorAcpAgent implements Agent {
 		}
 
 		try {
-			await recordSessionMeta(session.cwd, session.sessionId, session.backendSessionId);
+			await this.persistSessionMeta(session);
 		} catch (error) {
 			this.logger.error("[cursor-acp] Failed to record session meta", error);
 		}
@@ -912,14 +1021,21 @@ export class CursorAcpAgent implements Agent {
 							).values(),
 						];
 
+			const resolvedConfiguredModelId = resolveModelId(
+				session.configuredModelId,
+				listedModels,
+			);
+			if (resolvedConfiguredModelId) {
+				session.configuredModelId = resolvedConfiguredModelId;
+			}
 			const resolvedSessionModelId = resolveModelId(session.modelId, listedModels);
 			const resolvedNativeCurrentModelId = resolveModelId(
 				loaded.models.currentModelId,
 				listedModels,
 			);
-			session.modelId = resolvedSessionModelId;
 
 			const currentModelId =
+				resolvedConfiguredModelId ??
 				resolvedNativeCurrentModelId ??
 				listedModels.find((model) => model.current)?.modelId ??
 				resolvedSessionModelId ??
@@ -936,10 +1052,15 @@ export class CursorAcpAgent implements Agent {
 		}
 
 		if (loaded.modes?.currentModeId) {
-			const translated = this.translateNativeMode(session, loaded.modes.currentModeId);
-			session.modeId = translated;
-			if (translated === "default" || translated === "yolo") {
-				session.lastAgentModeId = translated;
+			if (
+				loaded.modes.currentModeId !== "agent" ||
+				(session.modeId !== "ask" && session.modeId !== "plan")
+			) {
+				const translated = this.translateNativeMode(session, loaded.modes.currentModeId);
+				session.modeId = translated;
+				if (translated === "default" || translated === "yolo") {
+					session.lastAgentModeId = translated;
+				}
 			}
 		}
 	}
@@ -949,7 +1070,12 @@ export class CursorAcpAgent implements Agent {
 		nativeClient: NativeSessionBackend,
 	): Promise<void> {
 		if (session.modeId === "ask" || session.modeId === "plan") {
-			await nativeClient.setNativeMode(this.modeToNativeMode(session.modeId));
+			const nativeMode = this.modeToNativeMode(session.modeId);
+			if (session.appliedNativeModeId === nativeMode) {
+				return;
+			}
+			await nativeClient.setNativeMode(nativeMode);
+			session.appliedNativeModeId = nativeMode;
 		}
 	}
 
@@ -957,9 +1083,11 @@ export class CursorAcpAgent implements Agent {
 		session: SessionState,
 		fallback: NewSessionResponse,
 	): ResumeSessionResponse {
+		const models = session.nativeSessionModels ?? fallback.models;
 		return {
-			models: session.nativeSessionModels ?? fallback.models,
+			models,
 			modes: availableModes(session.modeId),
+			configOptions: this.buildConfigOptions(session, models),
 		};
 	}
 
@@ -1008,6 +1136,13 @@ export class CursorAcpAgent implements Agent {
 			return;
 		}
 
+		if (session.nativeStartPromise) {
+			await session.nativeStartPromise;
+			if (session.nativeClient?.alive) {
+				return;
+			}
+		}
+
 		await this.createBackend(session);
 	}
 
@@ -1030,7 +1165,13 @@ export class CursorAcpAgent implements Agent {
 			this.logger.error("[cursor-acp] Unable to list models", error);
 		}
 
-		session.modelId = resolveModelId(session.modelId, listed);
+		const configuredModelId = resolveModelId(session.configuredModelId, listed);
+		if (configuredModelId) {
+			session.configuredModelId = configuredModelId;
+			session.modelId = configuredModelId;
+		} else {
+			session.modelId = resolveModelId(session.modelId, listed);
+		}
 
 		const availableModels = listed.map((model) => ({
 			modelId: model.modelId,
@@ -1041,7 +1182,7 @@ export class CursorAcpAgent implements Agent {
 		const hasSelectedModel =
 			typeof session.modelId === "string" &&
 			listed.some((model) => model.modelId === session.modelId);
-		if (!hasSelectedModel) {
+		if (!hasSelectedModel && !configuredModelId) {
 			session.modelId = listed.find((model) => model.current)?.modelId ?? listed[0]?.modelId;
 		}
 
@@ -1049,6 +1190,46 @@ export class CursorAcpAgent implements Agent {
 			availableModels,
 			currentModelId: session.modelId ?? "auto",
 		};
+	}
+
+	private buildConfigOptions(
+		session: SessionState,
+		models: NewSessionResponse["models"] = session.nativeSessionModels,
+	): SessionConfigOption[] {
+		const modeState = availableModes(session.modeId);
+		const configOptions: SessionConfigOption[] = [
+			{
+				id: "mode",
+				name: "Mode",
+				description: "Session mode",
+				category: "mode",
+				type: "select",
+				currentValue: modeState.currentModeId,
+				options: modeState.availableModes.map((mode) => ({
+					value: mode.id,
+					name: mode.name,
+					description: mode.description,
+				})),
+			},
+		];
+
+		if (models) {
+			configOptions.push({
+				id: "model",
+				name: "Model",
+				description: "AI model to use",
+				category: "model",
+				type: "select",
+				currentValue: models.currentModelId,
+				options: models.availableModels.map((model) => ({
+					value: model.modelId,
+					name: model.name,
+					description: model.description ?? undefined,
+				})),
+			});
+		}
+
+		return configOptions;
 	}
 
 	private modelHoverDescription(modelId: string, baseDescription: string): string {
@@ -1123,7 +1304,7 @@ export class CursorAcpAgent implements Agent {
 
 		try {
 			session.backendSessionId = await this.runner.createChat();
-			await recordSessionMeta(session.cwd, session.sessionId, session.backendSessionId);
+			await this.persistSessionMeta(session);
 		} catch (error) {
 			this.logger.error(
 				"[cursor-acp] create-chat failed, using lazy backend session binding",
@@ -1160,17 +1341,14 @@ export class CursorAcpAgent implements Agent {
 
 				if (mapped.backendSessionId) {
 					session.backendSessionId = mapped.backendSessionId;
-					await recordSessionMeta(
-						session.cwd,
-						session.sessionId,
-						session.backendSessionId,
-					);
+					await this.persistSessionMeta(session);
 				}
 
 				if (mapped.currentModeId) {
 					const translated = normalizeModeId(mapped.currentModeId);
 					if (translated) {
-						session.modeId = translated;
+						this.setSessionModeState(session, translated);
+						await this.persistSessionMeta(session);
 					}
 				}
 
@@ -1321,7 +1499,8 @@ export class CursorAcpAgent implements Agent {
 
 		if (update.sessionUpdate === "current_mode_update") {
 			const translatedMode = this.translateNativeMode(session, update.currentModeId);
-			session.modeId = translatedMode;
+			this.setSessionModeState(session, translatedMode);
+			await this.persistSessionMeta(session);
 			await this.emitOrQueueNotification(session, {
 				sessionId: session.sessionId,
 				update: {
@@ -1381,7 +1560,7 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	/**
-	 * Native `agent acp` uses the backend session id in payloads; the outer ACP client
+	 * Native `cursor-agent acp` uses the backend session id in payloads; the outer ACP client
 	 * only knows the wrapper session id. Rewrite when the id is missing or matches the backend.
 	 */
 	private rewriteNativeExtensionParams(
@@ -1486,17 +1665,32 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	private async applySessionMode(session: SessionState, modeId: SessionModeId): Promise<void> {
+		const canSetNativeMode =
+			session.nativeClient?.alive &&
+			!(session.nativeStartPromise && !session.backendSessionId);
+
+		if (canSetNativeMode) {
+			const nativeMode = this.modeToNativeMode(modeId);
+			await session.nativeClient!.setNativeMode(nativeMode);
+			session.appliedNativeModeId = nativeMode;
+		}
+
+		this.setSessionModeState(session, modeId);
+		await this.persistSessionMeta(session);
+	}
+
+	private setSessionModeState(session: SessionState, modeId: SessionModeId): void {
 		session.modeId = modeId;
 		if (modeId === "default" || modeId === "yolo") {
 			session.lastAgentModeId = modeId;
 		}
+	}
 
-		if (!session.nativeClient?.alive) {
-			return;
-		}
-
-		const nativeMode = this.modeToNativeMode(modeId);
-		await session.nativeClient!.setNativeMode(nativeMode);
+	private async persistSessionMeta(session: SessionState): Promise<void> {
+		await recordSessionMeta(session.cwd, session.sessionId, {
+			backendSessionId: session.backendSessionId,
+			modeId: session.modeId,
+		});
 	}
 
 	private requireSession(sessionId: string): SessionState {
@@ -1510,7 +1704,7 @@ export class CursorAcpAgent implements Agent {
 }
 
 export function maybeEmitSessionUpdate(
-	client: AgentSideConnection,
+	client: CursorAcpClient,
 	notification: SessionNotification,
 ): Promise<void> {
 	return client.sessionUpdate(notification);
