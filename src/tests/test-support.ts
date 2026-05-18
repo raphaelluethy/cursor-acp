@@ -5,18 +5,22 @@ import type {
 	NewSessionResponse,
 	PromptResponse,
 	RequestPermissionRequest,
-	RequestPermissionResponse,
 	SessionNotification,
 	SetSessionModeResponse,
 } from "@agentclientprotocol/sdk";
-import type { ExtendedInitializeRequest, ExtendedNewSessionRequest } from "../acp-request-extensions.js";
+import type {
+	ExtendedInitializeRequest,
+	ExtendedNewSessionRequest,
+} from "../acp-request-extensions.js";
 import type { CursorAcpClient } from "../cursor-acp-client.js";
 import type { CursorAcpAgent, SessionState } from "../cursor-acp-agent.js";
-import type { LoadSessionResponse } from "@agentclientprotocol/sdk";
-import type { CursorCliRunnerLike, CursorStreamEvent, RunPromptOptions } from "../cursor-cli-runner.js";
+import type {
+	CursorCliRunnerLike,
+	CursorStreamEvent,
+	RunPromptOptions,
+} from "../cursor-cli-runner.js";
 import type { CursorAuthClient } from "../auth.js";
 import type { Logger } from "../utils.js";
-import type { SessionModeId } from "../settings.js";
 
 export const noopLogger: Logger = {
 	log() {},
@@ -25,7 +29,8 @@ export const noopLogger: Logger = {
 
 /** Build an initialize request that may include client extension fields. */
 export function initRequest(
-	overrides: Partial<InitializeRequest> & Omit<ExtendedInitializeRequest, keyof InitializeRequest> = {},
+	overrides: Partial<InitializeRequest> &
+		Omit<ExtendedInitializeRequest, keyof InitializeRequest> = {},
 ): InitializeRequest {
 	return {
 		protocolVersion: 1,
@@ -36,7 +41,8 @@ export function initRequest(
 
 /** Build a newSession request that may include client extension fields. */
 export function newSessionRequest(
-	overrides: Partial<NewSessionRequest> & Omit<ExtendedNewSessionRequest, keyof NewSessionRequest> = {},
+	overrides: Partial<NewSessionRequest> &
+		Omit<ExtendedNewSessionRequest, keyof NewSessionRequest> = {},
 ): NewSessionRequest {
 	return {
 		cwd: "/tmp",

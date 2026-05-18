@@ -1,4 +1,8 @@
-import type { ClientCapabilities, InitializeRequest, NewSessionRequest } from "@agentclientprotocol/sdk";
+import type {
+	ClientCapabilities,
+	InitializeRequest,
+	NewSessionRequest,
+} from "@agentclientprotocol/sdk";
 
 /** Non-standard mode/model fields some ACP clients send on initialize or session/new. */
 export type LooseSessionDefaults = {

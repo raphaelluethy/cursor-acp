@@ -37,7 +37,6 @@ import { randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 import {
 	ExtendedInitializeRequest,
-	ExtendedNewSessionRequest,
 	looseSessionDefaults,
 	type LooseSessionDefaults,
 } from "./acp-request-extensions.js";
