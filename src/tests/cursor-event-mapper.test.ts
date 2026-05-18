@@ -78,7 +78,8 @@ describe("cursor event mapper", () => {
 
 		expect(completed.notifications[0].update.sessionUpdate).toBe("tool_call_update");
 		expect(
-			(completed.notifications[0].update as ToolCallNotificationUpdate)._meta?.terminal_output,
+			(completed.notifications[0].update as ToolCallNotificationUpdate)._meta
+				?.terminal_output,
 		).toEqual({
 			terminal_id: "cursor-shell-call_1",
 			data: "/tmp\n",
@@ -198,7 +199,13 @@ describe("cursor event mapper", () => {
 				todos: [{ content: "Inspect repo", status: "TODO_STATUS_PENDING" }],
 			},
 		});
-		expect(todoUpdate.content?.[0]?.content?.text).toContain("todos");
+		expect(
+			todoUpdate.content?.[0] &&
+				"content" in todoUpdate.content[0] &&
+				todoUpdate.content[0].content.type === "text"
+				? todoUpdate.content[0].content.text
+				: "",
+		).toContain("todos");
 
 		expect(done.notifications[1]).toEqual({
 			sessionId: "s1",

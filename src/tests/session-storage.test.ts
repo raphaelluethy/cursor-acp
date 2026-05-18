@@ -429,12 +429,10 @@ describe("session-storage", () => {
 
 			expect(notifications).toHaveLength(1);
 			const update = notifications[0].update;
-			expect(update.sessionUpdate).toBe("agent_message_chunk");
-			if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
-				expect(update.content.text).toBe("Part 1Part 2");
-			} else {
-				throw new Error("Expected text agent message chunk");
-			}
+			expect(update).toMatchObject({
+				sessionUpdate: "agent_message_chunk",
+				content: { type: "text", text: "Part 1Part 2" },
+			});
 		});
 	});
 });

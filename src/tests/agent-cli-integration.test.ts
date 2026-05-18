@@ -7,13 +7,11 @@ import {
 	AgentSideConnection,
 	ClientSideConnection,
 	ndJsonStream,
-	type NewSessionResponse,
-	type PromptResponse,
 	type RequestPermissionRequest,
 	type SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { CursorAcpAgent } from "../cursor-acp-agent.js";
-import { CursorCliRunner } from "../cursor-cli-runner.js";
+import { CursorCliRunner, type CursorStreamEvent } from "../cursor-cli-runner.js";
 import { nodeToWebReadable, nodeToWebWritable } from "../utils.js";
 import { noopLogger } from "./test-support.js";
 
@@ -81,7 +79,9 @@ async function createProtocolHarness(
 				clientUpdates.push(params);
 			},
 			requestPermission: async (params: RequestPermissionRequest) => {
-				const allowOption = params.options.find((option) => option.kind.startsWith("allow"));
+				const allowOption = params.options.find((option) =>
+					option.kind.startsWith("allow"),
+				);
 				return {
 					outcome: {
 						outcome: "selected",
@@ -149,7 +149,7 @@ for (const ev of events) {
 		const scriptPath = await writeFakeAgentScript("runner-stream.js", scriptBody);
 		const runner = new CursorCliRunner(scriptPath, noopLogger);
 
-		const receivedEvents: unknown[] = [];
+		const receivedEvents: CursorStreamEvent[] = [];
 		const run = runner.startPrompt({
 			workspace: tempScriptDir!,
 			prompt: "hello",
@@ -394,7 +394,14 @@ for (const chunk of chunks) {
 			const chunks = clientUpdates.filter(
 				(u) => u.update?.sessionUpdate === "agent_message_chunk",
 			);
-			const text = chunks.map((u) => u.update?.content?.text).join("");
+			const text = chunks
+				.map((u) =>
+					u.update.sessionUpdate === "agent_message_chunk" &&
+					u.update.content.type === "text"
+						? u.update.content.text
+						: "",
+				)
+				.join("");
 			expect(text).toBe("Hello from CLI");
 		} finally {
 			await cleanup();
