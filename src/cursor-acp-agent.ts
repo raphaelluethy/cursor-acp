@@ -84,7 +84,7 @@ import {
 	recordTurnArtifactsFromNativeSessionUpdate,
 	type TurnArtifact,
 } from "./native-assistant-stream.js";
-import { Logger, unreachable } from "./utils.js";
+import { isObject, Logger, unreachable } from "./utils.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -191,7 +191,7 @@ function normalizeNativeToolUpdateForClient(
 		}
 		const command = typeof next.rawInput?.command === "string" ? next.rawInput.command : "";
 		if (command) {
-			next.title = `\`${command.split("`").join("\\`")}\``;
+			next.title = command;
 		}
 	} else {
 		const hasOnlyTerminalContent =
@@ -215,6 +215,18 @@ function normalizeNativeToolUpdateForClient(
 	}
 
 	return next as SessionNotification["update"];
+}
+
+function normalizePermissionToolCallTitle(
+	toolCall: RequestPermissionRequest["toolCall"],
+): RequestPermissionRequest["toolCall"] {
+	const rawInput = toolCall.rawInput;
+	const command =
+		isObject(rawInput) && typeof rawInput.command === "string"
+			? rawInput.command
+			: "";
+
+	return command ? { ...toolCall, title: command } : toolCall;
 }
 
 function appendDebugLog(label: string, value: unknown): void {
@@ -1593,6 +1605,7 @@ export class CursorAcpAgent implements Agent {
 		return await this.client.requestPermission({
 			...request,
 			sessionId: session.sessionId,
+			toolCall: normalizePermissionToolCallTitle(request.toolCall),
 		});
 	}
 

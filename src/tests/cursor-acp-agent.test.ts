@@ -1339,6 +1339,7 @@ describe("CursorAcpAgent", () => {
 		});
 
 		expect(client.permissionCalls).toHaveLength(1);
+		expect(client.permissionCalls[0]!.toolCall.title).toBe("pwd");
 	});
 
 	it("auto-approves permission requests in yolo mode", async () => {
@@ -1640,7 +1641,7 @@ describe("CursorAcpAgent", () => {
 		if (started?.update.sessionUpdate !== "tool_call") {
 			throw new Error("Expected tool_call update");
 		}
-		expect(started.update.title).toBe("`pwd`");
+		expect(started.update.title).toBe("pwd");
 		expect(
 			started?.update.sessionUpdate === "tool_call"
 				? started.update._meta?.terminal_info

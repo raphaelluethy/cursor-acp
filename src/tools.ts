@@ -212,7 +212,7 @@ export function shellToolPresentation(
 	}
 
 	return {
-		title: command ? `\`${command.split("`").join("\\`")}\`` : "Shell",
+		title: command || "Shell",
 		content,
 		cwd: cd,
 	};

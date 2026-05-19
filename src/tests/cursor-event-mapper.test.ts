@@ -51,7 +51,7 @@ describe("cursor event mapper", () => {
 		const startedUpdate = started.notifications[0].update as ToolCallNotificationUpdate;
 		expect(startedUpdate.status).toBe("in_progress");
 		expect(startedUpdate.kind).toBe("execute");
-		expect(startedUpdate.title).toBe("`pwd`");
+		expect(startedUpdate.title).toBe("pwd");
 		expect(startedUpdate.content).toEqual([
 			{ type: "terminal", terminalId: "cursor-shell-call_1" },
 		]);
