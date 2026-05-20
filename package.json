@@ -1,7 +1,7 @@
 {
   "name": "@raphael/cursor-acp",
   "version": "0.7.2",
-  "description": "ACP adapter backed by Cursor Agent CLI",
+  "description": "ACP adapter backed by Cursor Agent SDK (with CLI fallback)",
   "main": "dist/lib.js",
   "types": "dist/lib.d.ts",
   "bin": {
@@ -54,6 +54,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@agentclientprotocol/sdk": "0.22.1",
+    "@cursor/sdk": "^1.0.13",
     "@typescript/native-preview": "^7.0.0-dev.20260430.1",
     "oxfmt": "^0.47.0",
     "oxlint": "^1.62.0"

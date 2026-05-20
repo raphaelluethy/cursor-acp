@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Source lives in `src/`. Key modules include the outer ACP agent (`src/cursor-acp-agent.ts`), the native `agent acp` bridge (`src/cursor-native-acp-client.ts`), Cursor CLI helpers (`src/cursor-cli-runner.ts`), and prompt conversion (`src/prompt-conversion.ts`). The adapter wraps Cursor's native `agent acp` backend and adds session persistence, history replay, model selection, and auto-approval of tool calls. Tests are in `src/tests/` and use the `.test.ts` naming pattern. Build output is emitted to `dist/` and should not be edited by hand. Documentation and notes live in `docs/`.
+Source lives in `src/`. Key modules include the outer ACP agent (`src/cursor-acp-agent.ts`), the native `agent acp` bridge (`src/cursor-native-acp-client.ts`), prompt runners (`src/cursor-sdk-runner.ts`, `src/cursor-cli-runner.ts`, `src/cursor-runner-provider.ts`), SDK event adaptation (`src/cursor-sdk-event-adapter.ts`), and prompt conversion (`src/prompt-conversion.ts`). The adapter uses `@cursor/sdk` for prompt turns when `CURSOR_API_KEY` is set, keeps `cursor-agent acp` for session compatibility, and adds session persistence, history replay, model selection, and auto-approval of tool calls. Tests are in `src/tests/` and use the `.test.ts` naming pattern. Build output is emitted to `dist/` and should not be edited by hand. Documentation and notes live in `docs/`.
 
 ## Build, Test, and Development Commands
 - `bun install`: install dependencies.
@@ -25,4 +25,4 @@ Use Vitest and place new tests in `src/tests/` with a `.test.ts` suffix. Prefer 
 Commit messages generally follow Conventional Commits: `type: summary` (examples: `feat: ...`, `docs: ...`, `chore: ...`, `test: ...`). Keep the subject short and imperative. PRs should include a clear description, linked issues if applicable, and explicit test steps. Add screenshots or logs for user-facing or CLI output changes, and update `README.md` when the usage surface changes.
 
 ## Configuration & Requirements
-Development expects Node.js 18+, Bun, and the Cursor CLI available on `PATH`. Ensure Cursor authentication is configured before running `bun run start` or `bun run dev`.
+Development expects Node.js 18+, Bun, and either `CURSOR_API_KEY` (SDK) or the Cursor CLI on `PATH`. Ensure authentication is configured before running `bun run start` or `bun run dev`.

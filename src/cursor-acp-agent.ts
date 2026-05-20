@@ -40,7 +40,7 @@ import {
 	looseSessionDefaults,
 	type LooseSessionDefaults,
 } from "./acp-request-extensions.js";
-import { CursorAuth, CursorAuthClient } from "./auth.js";
+import { createCursorAuth, CursorAuthClient } from "./auth.js";
 import type { CursorAcpClient } from "./cursor-acp-client.js";
 import { getDefaultCursorAgentCommand } from "./cursor-agent-command.js";
 import { CachedToolUse, mapCursorEventToAcp, RejectedToolCall } from "./cursor-event-mapper.js";
@@ -51,7 +51,9 @@ import {
 	NativeSessionBackend,
 	NativeSessionCallbacks,
 } from "./cursor-native-acp-client.js";
-import { CursorCliRunner, type CursorCliRunnerLike } from "./cursor-cli-runner.js";
+import type { CursorCliRunnerLike } from "./cursor-cli-runner.js";
+import { createCursorRunner } from "./cursor-runner-provider.js";
+import { shouldUseCursorSdk } from "./cursor-sdk-config.js";
 import { normalizeModelId, resolveModelId } from "./model-id.js";
 import { parseLeadingSlashCommand, promptToCursorText } from "./prompt-conversion.js";
 import {
@@ -222,9 +224,7 @@ function normalizePermissionToolCallTitle(
 ): RequestPermissionRequest["toolCall"] {
 	const rawInput = toolCall.rawInput;
 	const command =
-		isObject(rawInput) && typeof rawInput.command === "string"
-			? rawInput.command
-			: "";
+		isObject(rawInput) && typeof rawInput.command === "string" ? rawInput.command : "";
 
 	return command ? { ...toolCall, title: command } : toolCall;
 }
@@ -374,9 +374,9 @@ export class CursorAcpAgent implements Agent {
 		private readonly client: CursorAcpClient,
 		options: CursorAcpAgentOptions = {},
 	) {
-		this.runner = options.runner ?? new CursorCliRunner();
-		this.auth = options.auth ?? new CursorAuth();
 		this.logger = options.logger ?? console;
+		this.runner = options.runner ?? createCursorRunner(this.logger);
+		this.auth = options.auth ?? createCursorAuth();
 		this.nativeCommand = options.nativeCommand;
 		this.createNativeClient =
 			options.createNativeClient ??
@@ -394,7 +394,9 @@ export class CursorAcpAgent implements Agent {
 		const authMethod: NonNullable<InitializeResponse["authMethods"]>[number] = {
 			id: "cursor_login",
 			name: "Cursor Login",
-			description: "Authenticate using Cursor CLI credentials",
+			description: shouldUseCursorSdk()
+				? "Authenticate using CURSOR_API_KEY (Cursor SDK)"
+				: "Authenticate using Cursor CLI credentials",
 		};
 
 		if (request.clientCapabilities?._meta?.["terminal-auth"] === true) {

@@ -4,11 +4,14 @@
 
 Disclaimer: I am not affiliated with Cursor or Zed. This project is a personal experiment and should not be considered an official product of either company. I am a big fan of both products and wanted to combine what I like with both of them: An amazing editor and a great AI coding agent (and composer-1, holy this model flies xD).
 
-An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) adapter for [Cursor](https://cursor.com) Agent CLI, enabling Cursor's AI coding assistant to be used within [Zed](https://zed.dev) and other ACP-compatible clients.
+An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) adapter for [Cursor](https://cursor.com), enabling Cursor's AI coding assistant to be used within [Zed](https://zed.dev) and other ACP-compatible clients. Prompt execution uses the [`@cursor/sdk`](https://www.npmjs.com/package/@cursor/sdk) when `CURSOR_API_KEY` is set, with a CLI fallback for legacy auth and **Ask** mode.
 
 ## About
 
-This is an `ai-assisted` personal project aimed at bringing Cursor's agent into Zed. It uses a hybrid approach: native `cursor-agent acp` where that helps ACP/session compatibility, and the legacy `cursor-agent --print --output-format stream-json` prompt path where that preserves richer tool-call details in clients.
+This is an `ai-assisted` personal project aimed at bringing Cursor's agent into Zed. It uses a hybrid approach:
+
+- **Prompt execution**: [`@cursor/sdk`](https://cursor.com/docs/sdk/typescript) local agents when `CURSOR_API_KEY` is configured (same stream-json → ACP mapping pipeline as before). Falls back to `cursor-agent --print --output-format stream-json` without an API key or when `CURSOR_ACP_USE_CLI=1`.
+- **Native ACP bridge**: `cursor-agent acp` for session compatibility, slash commands/skills, and permissions (unchanged).
 
 **Based on [claude-code-acp](https://github.com/zed-industries/claude-code-acp)** by Zed Industries - the original ACP adapter for Claude Code that served as the architectural foundation for this project.
 
@@ -16,7 +19,7 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 
 ### Hybrid backend
 
-- **Command-preserving prompt execution**: Uses the legacy `cursor-agent --print --output-format stream-json` prompt path so shell tool calls keep the exact command text (`pwd`, `npm test`, etc.) in ACP clients
+- **Command-preserving prompt execution**: SDK and CLI runners both feed the same stream-json event mapper so shell tool calls keep the exact command text (`pwd`, `npm test`, etc.) in ACP clients
 - **Native ACP compatibility layer**: Keeps native `cursor-agent acp` for ACP/session compatibility work where the native backend is still useful
 - **Tool and message streaming**: Uses the stream-json mapper for prompt turns and still forwards native ACP `session/update` notifications where applicable
 - **Cursor extension RPCs**: Forwards native `cursor/*` extension methods and notifications (e.g. `cursor/ask_question`, `cursor/update_todos`) to the outer ACP client when supported
@@ -253,7 +256,10 @@ src/
 ├── lib.ts                # Library exports
 ├── cursor-acp-agent.ts   # Outer ACP agent + compatibility layer
 ├── cursor-native-acp-client.ts # Native `cursor-agent acp` bridge
-├── cursor-cli-runner.ts  # Cursor CLI helpers (model listing)
+├── cursor-sdk-runner.ts  # @cursor/sdk prompt runner
+├── cursor-cli-runner.ts  # Legacy CLI subprocess runner
+├── cursor-runner-provider.ts # SDK/CLI selection
+├── cursor-sdk-event-adapter.ts # SDKMessage → stream-json events
 ├── prompt-conversion.ts  # Flattens ACP prompts for native ACP forwarding
 ├── auth.ts               # Authentication handling
 ├── settings.ts           # Mode ids and normalization helpers
@@ -273,12 +279,31 @@ The adapter now uses `cursor-agent acp` as its session compatibility backend and
 
 Sessions are persisted under `~/.cursor-acp/sessions/` (or `$CURSOR_ACP_CONFIG_DIR/sessions/` if set). Each project has an encoded subdirectory; session history is stored as JSONL files with user and assistant messages for resume and replay.
 
+## Cursor SDK setup (recommended)
+
+1. Create an API key at [Cursor Dashboard → Integrations](https://cursor.com/dashboard/integrations).
+2. Export it before starting the adapter:
+
+```bash
+export CURSOR_API_KEY="your-key"
+```
+
+Optional environment variables:
+
+| Variable | Effect |
+| -------- | ------ |
+| `CURSOR_API_KEY` | Enables SDK-backed prompt execution and `/status` via `Cursor.me()` |
+| `CURSOR_ACP_USE_CLI=1` | Force legacy `cursor-agent` subprocesses for prompts and model listing |
+| `CURSOR_ACP_USE_SDK=0` | Disable SDK even when an API key is set |
+
+**Ask** mode still uses the CLI runner because the SDK exposes `agent` and `plan` modes only.
+
 ## Requirements
 
 - [Zed](https://zed.dev)
 - Node.js 25.6.1+
 - [Bun](https://bun.sh) (for package management and scripts)
-- Cursor CLI installed and available in PATH
+- `CURSOR_API_KEY` **or** Cursor CLI (`cursor-agent`) on `PATH`
 - Valid Cursor subscription
 
 ## Acknowledgments
