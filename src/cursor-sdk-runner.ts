@@ -1,20 +1,20 @@
 import { Agent, Cursor, type SDKAgent } from "@cursor/sdk";
 import { randomUUID } from "node:crypto";
 import type {
-	CursorCliRunnerLike,
+	CursorRunner,
 	CursorPromptRun,
 	CursorStreamEvent,
 	RunPromptOptions,
 	RunPromptResult,
-} from "./cursor-cli-runner.js";
+} from "./cursor-runner.js";
 import {
 	sdkMessageToCursorStreamEvent,
 	sdkRunResultToCursorResultEvent,
 } from "./cursor-sdk-event-adapter.js";
 import { getCursorApiKey } from "./cursor-sdk-config.js";
-import { normalizeModelId } from "./model-id.js";
-import { CursorModelDescriptor } from "./slash-commands.js";
-import { Logger } from "./utils.js";
+import { ensureAutoModel, normalizeModelId } from "./model-id.js";
+import type { CursorModelDescriptor } from "./slash-commands.js";
+import type { Logger } from "./utils.js";
 
 const PENDING_AGENT_PREFIX = "pending-";
 const RESULT_EVENT_GRACE_MS = 500;
@@ -24,15 +24,15 @@ interface ManagedAgent {
 	cwd: string;
 }
 
-function isPendingAgentId(agentId: string | undefined): boolean {
+function isPendingAgentId(agentId: string | undefined): agentId is string {
 	return typeof agentId === "string" && agentId.startsWith(PENDING_AGENT_PREFIX);
 }
 
-function isResumableAgentId(agentId: string | undefined): boolean {
+function isResumableAgentId(agentId: string | undefined): agentId is string {
 	return typeof agentId === "string" && agentId.length > 0 && !isPendingAgentId(agentId);
 }
 
-export class CursorSdkRunner implements CursorCliRunnerLike {
+export class CursorSdkRunner implements CursorRunner {
 	private readonly agents = new Map<string, ManagedAgent>();
 	private readonly apiKey: string;
 
@@ -48,11 +48,13 @@ export class CursorSdkRunner implements CursorCliRunnerLike {
 
 	async listModels(): Promise<CursorModelDescriptor[]> {
 		const models = await Cursor.models.list({ apiKey: this.apiKey });
-		return models.map((model) => ({
-			modelId: model.id,
-			name: model.displayName?.trim() || model.id,
-			...(model.variants?.find((variant) => variant.isDefault) ? { current: true } : {}),
-		}));
+		return ensureAutoModel(
+			models.map((model) => ({
+				modelId: model.id,
+				name: model.displayName?.trim() || model.id,
+				...(model.variants?.find((variant) => variant.isDefault) ? { current: true } : {}),
+			})),
+		);
 	}
 
 	async createChat(): Promise<string> {
@@ -209,7 +211,7 @@ export class CursorSdkRunner implements CursorCliRunnerLike {
 			local: { cwd: options.workspace },
 		});
 
-		const key = isResumableAgentId(backendSessionId) ? backendSessionId! : agent.agentId;
+		const key = isResumableAgentId(backendSessionId) ? backendSessionId : agent.agentId;
 		this.agents.set(key, { agent, cwd: options.workspace });
 		if (backendSessionId && isPendingAgentId(backendSessionId)) {
 			this.agents.delete(backendSessionId);

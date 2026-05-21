@@ -52,8 +52,8 @@ describe("skills", () => {
 
 		try {
 			const skills = await loadCustomSkills(workspace, home);
-			const names = skills.map((skill) => skill.name);
-			expect(names).toEqual(["cursor-skill", "user-skill", "workspace-skill"]);
+			const skillNames = skills.map((skill) => skill.name);
+			expect(skillNames).toEqual(["cursor-skill", "user-skill", "workspace-skill"]);
 
 			const cursor = skills.find((skill) => skill.name === "cursor-skill");
 			const user = skills.find((skill) => skill.name === "user-skill");

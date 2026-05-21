@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
 	sdkMessageToCursorStreamEvent,
 	sdkRunResultToCursorResultEvent,
-	sdkToolNameToCliKey,
+	sdkToolNameToStreamEventKey,
 } from "../cursor-sdk-event-adapter.js";
 import { type CachedToolUse, mapCursorEventToAcp } from "../cursor-event-mapper.js";
 
 describe("cursor sdk event adapter", () => {
-	it("maps sdk tool names to cli tool keys", () => {
-		expect(sdkToolNameToCliKey("shell")).toBe("shellToolCall");
-		expect(sdkToolNameToCliKey("shellToolCall")).toBe("shellToolCall");
+	it("maps sdk tool names to stream event keys", () => {
+		expect(sdkToolNameToStreamEventKey("shell")).toBe("shellToolCall");
+		expect(sdkToolNameToStreamEventKey("shellToolCall")).toBe("shellToolCall");
 	});
 
 	it("maps shell tool lifecycle to ACP notifications", () => {

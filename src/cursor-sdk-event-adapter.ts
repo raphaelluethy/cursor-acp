@@ -1,9 +1,8 @@
 import type { SDKMessage } from "@cursor/sdk";
-import type { CursorStreamEvent } from "./cursor-cli-runner.js";
+import type { CursorStreamEvent } from "./cursor-runner.js";
 import { isObject } from "./utils.js";
 
-/** Map SDK tool `name` values to stream-json keys (e.g. `shell` → `shellToolCall`). */
-export function sdkToolNameToCliKey(name: string): string {
+export function sdkToolNameToStreamEventKey(name: string): string {
 	const trimmed = name.trim();
 	if (trimmed.length === 0) {
 		return "toolToolCall";
@@ -36,7 +35,7 @@ function buildToolCallPayload(
 	args: unknown,
 	result?: unknown,
 ): Record<string, unknown> {
-	const key = sdkToolNameToCliKey(name);
+	const key = sdkToolNameToStreamEventKey(name);
 	const node: Record<string, unknown> = {
 		args: normalizeToolArgs(args),
 	};
@@ -47,10 +46,6 @@ function buildToolCallPayload(
 	return { [key]: node };
 }
 
-/**
- * Convert a Cursor SDK stream message into the legacy stream-json shape consumed by
- * {@link mapCursorEventToAcp}.
- */
 export function sdkMessageToCursorStreamEvent(message: SDKMessage): CursorStreamEvent[] {
 	switch (message.type) {
 		case "system": {

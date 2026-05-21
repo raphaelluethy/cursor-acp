@@ -1,7 +1,7 @@
 {
   "name": "@raphael/cursor-acp",
   "version": "0.7.2",
-  "description": "ACP adapter backed by Cursor Agent SDK (with CLI fallback)",
+  "description": "ACP adapter backed by Cursor Agent SDK",
   "main": "dist/lib.js",
   "types": "dist/lib.d.ts",
   "bin": {
@@ -24,8 +24,9 @@
     "package.json"
   ],
   "scripts": {
-    "build": "tsc",
-    "build:clean": "rm -rf dist && tsc",
+    "postinstall": "bun scripts/rebuild-sqlite3.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "build:clean": "rm -rf dist && tsc -p tsconfig.build.json",
     "start": "bun dist/index.js",
     "dev": "bun run build && bun dist/index.js",
     "lint": "oxlint src",
@@ -52,6 +53,9 @@
     "adapter"
   ],
   "license": "Apache-2.0",
+  "trustedDependencies": [
+    "sqlite3"
+  ],
   "dependencies": {
     "@agentclientprotocol/sdk": "0.22.1",
     "@cursor/sdk": "^1.0.13",
@@ -60,7 +64,7 @@
     "oxlint": "^1.62.0"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "^25.9.1",
     "@typescript-eslint/eslint-plugin": "^8.59.1",
     "@typescript-eslint/parser": "^8.59.1",
     "eslint": "^10.2.1",

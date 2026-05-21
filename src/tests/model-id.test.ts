@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeModelId, resolveModelId } from "../model-id.js";
+import { ensureAutoModel, normalizeModelId, resolveModelId } from "../model-id.js";
 
 describe("model id normalization", () => {
 	it("keeps current model ids unchanged", () => {
@@ -13,7 +13,7 @@ describe("model id normalization", () => {
 		expect(normalizeModelId("default[fast=true]")).toBe("auto");
 	});
 
-	it("converts legacy fast syntax to Cursor CLI model ids", () => {
+	it("converts legacy fast syntax to normalized model ids", () => {
 		expect(normalizeModelId("composer-2[fast=true]")).toBe("composer-2-fast");
 		expect(normalizeModelId("composer-2-fast[fast=false]")).toBe("composer-2");
 	});
@@ -34,5 +34,12 @@ describe("model id normalization", () => {
 				{ modelId: "gpt-5.4-medium", name: "GPT-5.4" },
 			]),
 		).toBe("auto");
+	});
+
+	it("adds auto to model lists when missing", () => {
+		expect(ensureAutoModel([{ modelId: "gpt-5.4-medium", name: "GPT-5.4" }])).toEqual([
+			{ modelId: "auto", name: "Auto" },
+			{ modelId: "gpt-5.4-medium", name: "GPT-5.4" },
+		]);
 	});
 });

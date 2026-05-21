@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CursorAuthClient } from "./auth.js";
-import { resolveModelId } from "./model-id.js";
+import { ensureAutoModel, resolveModelId } from "./model-id.js";
 import {
 	ADVERTISED_MODE_IDS,
 	modeDisplayName,
@@ -33,7 +33,7 @@ export interface CustomSlashCommand {
 
 export interface SlashCommandContext {
 	session: SlashSessionState;
-	auth: CursorAuthClient;
+	auth?: CursorAuthClient;
 	listModels: () => Promise<CursorModelDescriptor[]>;
 	availableCommands?: AvailableCommand[];
 	onModeChanged?: (modeId: SessionModeId) => Promise<void>;
@@ -57,8 +57,8 @@ const BUILTIN_SLASH_COMMANDS: AvailableCommand[] = [
 		description: "Get or set active mode",
 		input: { hint: "<mode-id>" },
 	},
-	{ name: "login", description: "Sign in via Cursor CLI", input: null },
-	{ name: "logout", description: "Sign out via Cursor CLI", input: null },
+	{ name: "login", description: "Show SDK authentication setup", input: null },
+	{ name: "logout", description: "Explain how to clear SDK authentication", input: null },
 	{ name: "status", description: "Show login status", input: null },
 ];
 
@@ -337,6 +337,10 @@ export async function handleSlashCommand(
 			};
 
 		case "status": {
+			if (!context.auth) {
+				return { handled: true, responseText: "Set CURSOR_API_KEY to authenticate" };
+			}
+
 			const status = await context.auth.status();
 			if (status.loggedIn) {
 				return {
@@ -347,37 +351,19 @@ export async function handleSlashCommand(
 			return { handled: true, responseText: "Not logged in" };
 		}
 
-		case "login": {
-			const statusBefore = await context.auth.status();
-			if (statusBefore.loggedIn) {
-				return {
-					handled: true,
-					responseText: `Already logged in as ${statusBefore.account}`,
-				};
-			}
-
-			await context.auth.login();
-			const statusAfter = await context.auth.status();
-			if (statusAfter.loggedIn) {
-				return {
-					handled: true,
-					responseText: `Logged in as ${statusAfter.account}`,
-				};
-			}
+		case "login":
 			return {
 				handled: true,
-				responseText: "Login did not complete successfully",
+				responseText:
+					"Set CURSOR_API_KEY from Cursor Dashboard integrations to authenticate.",
 			};
-		}
 
-		case "logout": {
-			await context.auth.logout();
-			return { handled: true, responseText: "Logged out" };
-		}
+		case "logout":
+			return { handled: true, responseText: "Unset CURSOR_API_KEY to sign out" };
 
 		case "model": {
 			const target = args.trim();
-			const models = await context.listModels();
+			const models = ensureAutoModel(await context.listModels());
 
 			if (!target) {
 				const current =

@@ -328,7 +328,7 @@ export function maybeDiffContentFromMutationResult(
 }
 
 /**
- * When the CLI includes enough data in the tool *args* (before the result arrives),
+ * When the SDK includes enough data in the tool *args* (before the result arrives),
  * emit an ACP diff like codex-acp does on patch begin so clients can
  * show inline diff / pending-edit UI during the turn.
  */

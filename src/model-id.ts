@@ -1,4 +1,9 @@
-import { CursorModelDescriptor } from "./slash-commands.js";
+import type { CursorModelDescriptor } from "./slash-commands.js";
+
+const AUTO_MODEL: CursorModelDescriptor = {
+	modelId: "auto",
+	name: "Auto",
+};
 
 interface ParsedLegacyModelId {
 	baseModelId: string;
@@ -73,6 +78,14 @@ export function normalizeModelId(modelId: string): string {
 	}
 
 	return parsed.baseModelId;
+}
+
+export function ensureAutoModel(models: CursorModelDescriptor[]): CursorModelDescriptor[] {
+	if (models.some((model) => model.modelId === AUTO_MODEL.modelId)) {
+		return models;
+	}
+
+	return [AUTO_MODEL, ...models];
 }
 
 export function resolveModelId(

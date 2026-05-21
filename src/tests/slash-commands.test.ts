@@ -11,21 +11,6 @@ import {
 	resolveCustomSlashCommandPrompt,
 } from "../slash-commands.js";
 
-const mockAuth = {
-	async status() {
-		return { loggedIn: true as const, account: "user@example.com", raw: "" };
-	},
-	async login() {
-		return { code: 0, stdout: "", stderr: "" };
-	},
-	async logout() {
-		return { code: 0, stdout: "", stderr: "" };
-	},
-	async ensureLoggedIn() {
-		return { loggedIn: true as const, account: "user@example.com", raw: "" };
-	},
-};
-
 describe("slash commands", () => {
 	it("parses model output", () => {
 		const parsed = parseModelListOutput(
@@ -41,7 +26,6 @@ describe("slash commands", () => {
 		const session = { modelId: "auto", modeId: "default" as const };
 		const result = await handleSlashCommand("model", "gpt-5.2", {
 			session,
-			auth: mockAuth,
 			listModels: async () => [
 				{ modelId: "auto", name: "Auto" },
 				{ modelId: "gpt-5.2", name: "GPT-5.2" },
@@ -57,7 +41,6 @@ describe("slash commands", () => {
 		const session = { modelId: "auto", modeId: "default" as const };
 		const result = await handleSlashCommand("model", "gpt-5.2-fast", {
 			session,
-			auth: mockAuth,
 			listModels: async () => [
 				{ modelId: "auto", name: "Auto" },
 				{ modelId: "auto-fast", name: "Auto (Fast)" },
@@ -75,7 +58,6 @@ describe("slash commands", () => {
 		const session = { modelId: "auto", modeId: "default" as const };
 		const result = await handleSlashCommand("model", "composer-2[fast=true]", {
 			session,
-			auth: mockAuth,
 			listModels: async () => [
 				{ modelId: "composer-2", name: "Composer 2" },
 				{ modelId: "composer-2-fast", name: "Composer 2 Fast" },
@@ -91,7 +73,6 @@ describe("slash commands", () => {
 		const session = { modelId: "auto", modeId: "default" as const };
 		const result = await handleSlashCommand("mode", "yolo", {
 			session,
-			auth: mockAuth,
 			listModels: async () => [],
 		});
 
@@ -104,7 +85,6 @@ describe("slash commands", () => {
 		const session = { modelId: "auto", modeId: "default" as const };
 		const result = await handleSlashCommand("mode", "bypassPermissions", {
 			session,
-			auth: mockAuth,
 			listModels: async () => [],
 		});
 
@@ -212,7 +192,6 @@ describe("slash commands", () => {
 	it("lists merged command metadata in /help output", async () => {
 		const result = await handleSlashCommand("help", "", {
 			session: { modelId: "auto", modeId: "default" },
-			auth: mockAuth,
 			listModels: async () => [],
 			availableCommands: availableSlashCommands([
 				{

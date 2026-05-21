@@ -1,5 +1,5 @@
 import { SessionNotification } from "@agentclientprotocol/sdk";
-import { CursorStreamEvent } from "./cursor-cli-runner.js";
+import { CursorStreamEvent } from "./cursor-runner.js";
 import { Logger, isObject, sanitizeToolCallId } from "./utils.js";
 import {
 	CursorToolPayload,
