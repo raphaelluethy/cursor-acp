@@ -1,12 +1,13 @@
 # Breaking changes
 
-The up-to-date notice for upgrades involving the current **hybrid backend** and **Yolo** (`yolo`) mode lives in the main project README:
+The up-to-date notice for upgrades involving the current **SDK-only backend** and **Yolo** (`yolo`) mode lives in the main project README:
 
-**[Breaking changes (hybrid backend & Yolo)](../README.md#breaking-changes-hybrid-backend--yolo)**
+**[Breaking changes (SDK-only backend & Yolo)](../README.md#breaking-changes-sdk-only-backend--yolo)**
 
 That section covers:
 
-- the return to the legacy **`cursor-agent --print --output-format stream-json`** prompt path for accurate shell command display
-- continued use of native **`cursor-agent acp`** for session compatibility features
+- removal of all Cursor command subprocess integration
+- SDK-only prompt execution, model listing, and authentication
 - fallback handling for `CURSOR_ACP_DEFAULT_MODE` / `CURSOR_ACP_DEFAULT_MODEL`
 - removal of legacy Yolo aliases like `bypassPermissions` / `autoRunAllCommands`
+- removal of the advertised Ask mode; `ask` is accepted only as a legacy alias for `default`
