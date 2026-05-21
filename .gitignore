@@ -6,3 +6,6 @@ coverage
 docs/
 
 .junie/
+
+**/playground.ts
+out.txt
