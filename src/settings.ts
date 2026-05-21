@@ -30,6 +30,15 @@ export function getEnvDefaultModel(): string | undefined {
 	return trimmed.length > 0 ? trimmed : undefined;
 }
 
+export function getEnvDefaultThinking(): string | undefined {
+	const raw = process.env.CURSOR_ACP_DEFAULT_THINKING;
+	if (!raw) {
+		return undefined;
+	}
+	const trimmed = raw.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
 export function normalizeModeId(value: string): SessionModeId | null {
 	if (ADVERTISED_MODE_IDS.includes(value as SessionModeId)) {
 		return value as SessionModeId;

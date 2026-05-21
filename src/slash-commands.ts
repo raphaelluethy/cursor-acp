@@ -12,10 +12,28 @@ import {
 } from "./settings.js";
 import { CustomSkill, resolveSkillPrompt } from "./skills.js";
 
+export interface ModelParameterOption {
+	value: string;
+	displayName?: string;
+}
+
+export interface ModelParameterDescriptor {
+	id: string;
+	displayName?: string;
+	values: ModelParameterOption[];
+}
+
+export interface ModelVariantDescriptor {
+	params: Array<{ id: string; value: string }>;
+	isDefault?: boolean;
+}
+
 export interface CursorModelDescriptor {
 	modelId: string;
 	name: string;
 	current?: boolean;
+	parameters?: ModelParameterDescriptor[];
+	variants?: ModelVariantDescriptor[];
 }
 
 export interface SlashSessionState {

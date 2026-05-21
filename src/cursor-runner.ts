@@ -13,10 +13,12 @@ export interface RunPromptOptions {
 	prompt: string;
 	backendSessionId?: string;
 	modelId?: string;
+	thinkingLevel?: string;
 	modeId?: "plan";
 	force?: boolean;
 	streamPartialOutput?: boolean;
 	env?: Environment;
+	modelCatalog?: CursorModelDescriptor[];
 	onEvent?: (event: CursorStreamEvent) => Promise<void> | void;
 }
 

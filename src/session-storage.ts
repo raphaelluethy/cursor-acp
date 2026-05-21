@@ -29,6 +29,7 @@ export interface SessionMetaEntry {
 	cwd: string;
 	backendSessionId?: string;
 	modeId?: SessionModeId;
+	thinkingLevel?: string;
 }
 
 interface SessionListEntry {
@@ -90,6 +91,7 @@ export async function recordSessionMeta(
 	meta: {
 		backendSessionId?: string;
 		modeId?: SessionModeId;
+		thinkingLevel?: string;
 	},
 ): Promise<void> {
 	const entry: SessionMetaEntry = {
@@ -99,6 +101,7 @@ export async function recordSessionMeta(
 		cwd,
 		backendSessionId: meta.backendSessionId,
 		modeId: meta.modeId,
+		thinkingLevel: meta.thinkingLevel,
 	};
 	await ensureSessionDir(cwd);
 	const filePath = sessionFilePath(cwd, sessionId);
@@ -112,18 +115,21 @@ export async function recordSessionMeta(
 export async function readSessionMeta(filePath: string): Promise<{
 	backendSessionId?: string;
 	modeId?: SessionModeId;
+	thinkingLevel?: string;
 }> {
 	try {
 		const content = await fs.promises.readFile(filePath, "utf-8");
 		const lines = content.trim().split("\n").filter(Boolean);
 		let lastBackend: string | undefined;
 		let lastModeId: SessionModeId | undefined;
+		let lastThinkingLevel: string | undefined;
 		for (const line of lines) {
 			try {
 				const entry = JSON.parse(line) as {
 					type?: string;
 					backendSessionId?: string;
 					modeId?: string;
+					thinkingLevel?: string;
 				};
 				if (entry.type !== "session_meta") {
 					continue;
@@ -137,6 +143,9 @@ export async function readSessionMeta(filePath: string): Promise<{
 						lastModeId = normalizedModeId;
 					}
 				}
+				if (typeof entry.thinkingLevel === "string" && entry.thinkingLevel.trim().length > 0) {
+					lastThinkingLevel = entry.thinkingLevel.trim();
+				}
 			} catch {
 				continue;
 			}
@@ -144,6 +153,7 @@ export async function readSessionMeta(filePath: string): Promise<{
 		return {
 			backendSessionId: lastBackend,
 			modeId: lastModeId,
+			thinkingLevel: lastThinkingLevel,
 		};
 	} catch {
 		// file not readable

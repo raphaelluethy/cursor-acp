@@ -29,6 +29,7 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - **Session persistence & history replay**: Stores visible history locally and replays it on resume/load
 - **Session listing**: Lists past local sessions with optional cwd filtering and pagination
 - **Model listing and best-effort model selection**: Keeps `/model` support through SDK model APIs
+- **Thinking level selection**: Exposes reasoning effort as an ACP config option when the selected model supports SDK `thinking` parameters
 - **Authentication helpers**: `/login`, `/logout`, `/status` describe or verify SDK API-key authentication
 - **Prompt flattening for ACP clients**: Keeps embedded context and image prompts working by converting them to text before forwarding to the SDK
 - **Optional Yolo mode** (`yolo`): retries rejected tool calls with forced local execution when explicitly approved
@@ -45,7 +46,7 @@ The current release removes all Cursor command subprocess integration. Prompt ex
 
 ### Configuration defaults
 
-Prefer ACP client defaults, such as Zed’s inline `default_mode` / `default_model` fields on the custom agent entry. The adapter still reads `CURSOR_ACP_DEFAULT_MODE` and `CURSOR_ACP_DEFAULT_MODEL` as fallback values when the client does not send defaults.
+Prefer ACP client defaults, such as Zed’s inline `default_mode` / `default_model` fields on the custom agent entry. The adapter still reads `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING` as fallback values when the client does not send defaults.
 
 ### Legacy Yolo mode name aliases removed
 

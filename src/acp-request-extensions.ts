@@ -16,8 +16,15 @@ export type LooseSessionDefaults = {
 	model?: unknown;
 	defaultModelId?: unknown;
 	default_model?: unknown;
-	defaultConfigOptions?: { mode?: unknown; model?: unknown };
-	default_config_options?: { mode?: unknown; model?: unknown };
+	thinkingLevel?: unknown;
+	thinking_level?: unknown;
+	thinking?: unknown;
+	defaultThinkingLevel?: unknown;
+	default_thinking_level?: unknown;
+	defaultThinking?: unknown;
+	default_thinking?: unknown;
+	defaultConfigOptions?: { mode?: unknown; model?: unknown; thinking?: unknown };
+	default_config_options?: { mode?: unknown; model?: unknown; thinking?: unknown };
 	_meta?: LooseSessionDefaults;
 };
 

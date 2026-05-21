@@ -41,7 +41,15 @@ import type { CursorAcpClient } from "./cursor-acp-client.js";
 import { CachedToolUse, mapCursorEventToAcp, RejectedToolCall } from "./cursor-event-mapper.js";
 import type { CursorRunner } from "./cursor-runner.js";
 import { createCursorRunner } from "./cursor-runner-provider.js";
-import { ensureAutoModel, normalizeModelId, resolveModelId } from "./model-id.js";
+import {
+	ensureAutoModel,
+	findModelInCatalog,
+	getThinkingParameter,
+	isValidThinkingLevel,
+	normalizeModelId,
+	resolveModelId,
+	resolveThinkingLevel,
+} from "./model-id.js";
 import { parseLeadingSlashCommand, promptToCursorText } from "./prompt-conversion.js";
 import {
 	availableSlashCommands,
@@ -53,6 +61,7 @@ import {
 	DEFAULT_MODE_ID,
 	getEnvDefaultMode,
 	getEnvDefaultModel,
+	getEnvDefaultThinking,
 	normalizeModeId,
 	SessionModeId,
 } from "./settings.js";
@@ -147,6 +156,42 @@ function modelCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
 	];
 }
 
+function pickThinkingLevel(...candidates: unknown[]): string | undefined {
+	for (const candidate of candidates) {
+		if (typeof candidate !== "string") {
+			continue;
+		}
+		const trimmed = candidate.trim();
+		if (trimmed.length > 0) {
+			return trimmed;
+		}
+	}
+	return undefined;
+}
+
+function thinkingCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
+	return [
+		raw.thinkingLevel,
+		raw.thinking_level,
+		raw.thinking,
+		raw.defaultThinkingLevel,
+		raw.default_thinking_level,
+		raw.defaultThinking,
+		raw.default_thinking,
+		raw.defaultConfigOptions?.thinking,
+		raw.default_config_options?.thinking,
+		raw._meta?.thinkingLevel,
+		raw._meta?.thinking_level,
+		raw._meta?.thinking,
+		raw._meta?.defaultThinkingLevel,
+		raw._meta?.default_thinking_level,
+		raw._meta?.defaultThinking,
+		raw._meta?.default_thinking,
+		raw._meta?.defaultConfigOptions?.thinking,
+		raw._meta?.default_config_options?.thinking,
+	];
+}
+
 interface ActiveRunState {
 	cancel: () => void;
 }
@@ -163,6 +208,8 @@ export interface SessionState {
 	modeId: SessionModeId;
 	modelId?: string;
 	configuredModelId?: string;
+	thinkingLevel?: string;
+	configuredThinkingLevel?: string;
 	lastAgentModeId: "default" | "yolo";
 	cancelled: boolean;
 	activeRun?: ActiveRunState;
@@ -171,6 +218,7 @@ export interface SessionState {
 	notificationsReady: boolean;
 	pendingNotifications: SessionNotification[];
 	models?: NewSessionResponse["models"];
+	modelCatalog?: CursorModelDescriptor[];
 }
 
 export interface CursorAcpAgentOptions {
@@ -183,6 +231,7 @@ export class CursorAcpAgent implements Agent {
 	private readonly sessions: Record<string, SessionState> = {};
 	private defaultModeId?: SessionModeId;
 	private defaultModelId?: string;
+	private defaultThinkingLevel?: string;
 
 	private readonly runner: CursorRunner;
 	private readonly auth: CursorAuthClient;
@@ -203,6 +252,7 @@ export class CursorAcpAgent implements Agent {
 		const initDefaults = this.extractInitializeDefaults(request);
 		this.defaultModeId = initDefaults.modeId ?? getEnvDefaultMode();
 		this.defaultModelId = initDefaults.modelId ?? getEnvDefaultModel();
+		this.defaultThinkingLevel = initDefaults.thinkingLevel ?? getEnvDefaultThinking();
 
 		const authMethod: NonNullable<InitializeResponse["authMethods"]>[number] = {
 			id: "cursor_login",
@@ -269,6 +319,7 @@ export class CursorAcpAgent implements Agent {
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
 			preferredModeId: meta.modeId,
+			preferredThinkingLevel: meta.thinkingLevel,
 		});
 
 		const session = this.requireSession(params.sessionId);
@@ -361,6 +412,7 @@ export class CursorAcpAgent implements Agent {
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
 			preferredModeId: meta.modeId,
+			preferredThinkingLevel: meta.thinkingLevel,
 		});
 
 		const session = this.requireSession(params.sessionId);
@@ -412,6 +464,7 @@ export class CursorAcpAgent implements Agent {
 				onModelChanged: async (modelId) => {
 					session.modelId = modelId;
 					session.configuredModelId = modelId;
+					this.syncThinkingLevelForModel(session);
 					await this.persistSessionMeta(session);
 				},
 			});
@@ -513,6 +566,7 @@ export class CursorAcpAgent implements Agent {
 
 		session.modelId = normalizeModelId(params.modelId);
 		session.configuredModelId = session.modelId;
+		this.syncThinkingLevelForModel(session);
 		await this.persistSessionMeta(session);
 		return {};
 	}
@@ -542,6 +596,27 @@ export class CursorAcpAgent implements Agent {
 			}
 			session.modelId = normalizeModelId(params.value);
 			session.configuredModelId = session.modelId;
+			this.syncThinkingLevelForModel(session);
+			await this.persistSessionMeta(session);
+			return { configOptions: this.buildConfigOptions(session) };
+		}
+
+		if (params.configId === "thinking") {
+			if (session.activeRun) {
+				throw RequestError.invalidParams("Cannot change thinking level during an active prompt");
+			}
+			const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
+			const thinkingParameter = getThinkingParameter(currentModel);
+			if (!thinkingParameter) {
+				throw RequestError.invalidParams(
+					"Thinking level is not supported for the current model",
+				);
+			}
+			if (!isValidThinkingLevel(currentModel, params.value)) {
+				throw RequestError.invalidParams(`Invalid thinking level: ${params.value}`);
+			}
+			session.thinkingLevel = params.value;
+			session.configuredThinkingLevel = params.value;
 			await this.persistSessionMeta(session);
 			return { configOptions: this.buildConfigOptions(session) };
 		}
@@ -588,9 +663,11 @@ export class CursorAcpAgent implements Agent {
 		mcpServers?: NewSessionRequest["mcpServers"];
 		preferredModeId?: SessionModeId;
 		preferredModelId?: string;
+		preferredThinkingLevel?: string;
 	}): Promise<NewSessionResponse> {
 		const modeId = params.preferredModeId ?? this.defaultModeId ?? DEFAULT_MODE_ID;
 		const configuredModelId = params.preferredModelId ?? this.defaultModelId;
+		const configuredThinkingLevel = params.preferredThinkingLevel ?? this.defaultThinkingLevel;
 		const session: SessionState = {
 			sessionId: params.sessionId,
 			cwd: params.cwd,
@@ -598,6 +675,7 @@ export class CursorAcpAgent implements Agent {
 			modeId,
 			modelId: configuredModelId,
 			configuredModelId,
+			configuredThinkingLevel,
 			lastAgentModeId: modeId === "yolo" ? "yolo" : "default",
 			cancelled: false,
 			availableCommands: [],
@@ -632,6 +710,7 @@ export class CursorAcpAgent implements Agent {
 	private extractInitializeDefaults(request: InitializeRequest): {
 		modeId?: SessionModeId;
 		modelId?: string;
+		thinkingLevel?: string;
 	} {
 		const raw = request as ExtendedInitializeRequest;
 
@@ -643,6 +722,10 @@ export class CursorAcpAgent implements Agent {
 			modelId: pickNormalizedModelId(
 				...modelCandidatesFrom(raw),
 				...modelCandidatesFrom(raw.clientCapabilities?._meta ?? {}),
+			),
+			thinkingLevel: pickThinkingLevel(
+				...thinkingCandidatesFrom(raw),
+				...thinkingCandidatesFrom(raw.clientCapabilities?._meta ?? {}),
 			),
 		};
 	}
@@ -707,6 +790,8 @@ export class CursorAcpAgent implements Agent {
 			this.logger.error("[cursor-acp] Unable to list models", error);
 		}
 
+		session.modelCatalog = listed;
+
 		const configuredModelId = resolveModelId(session.configuredModelId, listed);
 		if (configuredModelId) {
 			session.configuredModelId = configuredModelId;
@@ -727,6 +812,8 @@ export class CursorAcpAgent implements Agent {
 		if (!hasSelectedModel && !configuredModelId) {
 			session.modelId = listed.find((model) => model.current)?.modelId ?? listed[0]?.modelId;
 		}
+
+		this.syncThinkingLevelForModel(session);
 
 		const models = {
 			availableModels,
@@ -774,7 +861,42 @@ export class CursorAcpAgent implements Agent {
 			});
 		}
 
+		const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
+		const thinkingParameter = getThinkingParameter(currentModel);
+		if (thinkingParameter && session.thinkingLevel) {
+			configOptions.push({
+				id: "thinking",
+				name: thinkingParameter.displayName ?? "Thinking",
+				description: "Reasoning effort for the selected model",
+				category: "thought_level",
+				type: "select",
+				currentValue: session.thinkingLevel,
+				options: thinkingParameter.values.map((value) => ({
+					value: value.value,
+					name: value.displayName ?? value.value,
+				})),
+			});
+		}
+
 		return configOptions;
+	}
+
+	private syncThinkingLevelForModel(session: SessionState): void {
+		const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
+		const thinkingParameter = getThinkingParameter(currentModel);
+		if (!thinkingParameter) {
+			session.thinkingLevel = undefined;
+			return;
+		}
+
+		const resolved = resolveThinkingLevel(currentModel, session.configuredThinkingLevel);
+		session.thinkingLevel = resolved;
+		if (
+			session.configuredThinkingLevel &&
+			!isValidThinkingLevel(currentModel, session.configuredThinkingLevel)
+		) {
+			session.configuredThinkingLevel = resolved;
+		}
 	}
 
 	private modelHoverDescription(modelId: string, baseDescription: string): string {
@@ -841,6 +963,8 @@ export class CursorAcpAgent implements Agent {
 			backendSessionId: session.backendSessionId,
 			prompt: promptText,
 			modelId: session.modelId,
+			thinkingLevel: session.thinkingLevel,
+			modelCatalog: session.modelCatalog,
 			modeId: modeSettings.modeId,
 			force: modeSettings.force,
 			onEvent: async (event) => {
@@ -1031,6 +1155,7 @@ export class CursorAcpAgent implements Agent {
 		await recordSessionMeta(session.cwd, session.sessionId, {
 			backendSessionId: session.backendSessionId,
 			modeId: session.modeId,
+			thinkingLevel: session.configuredThinkingLevel ?? session.thinkingLevel,
 		});
 	}
 

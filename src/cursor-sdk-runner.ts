@@ -12,7 +12,7 @@ import {
 	sdkRunResultToCursorResultEvent,
 } from "./cursor-sdk-event-adapter.js";
 import { getCursorApiKey } from "./cursor-sdk-config.js";
-import { ensureAutoModel, normalizeModelId } from "./model-id.js";
+import { buildSdkModelSelection, ensureAutoModel } from "./model-id.js";
 import type { CursorModelDescriptor } from "./slash-commands.js";
 import type { Logger } from "./utils.js";
 
@@ -53,6 +53,29 @@ export class CursorSdkRunner implements CursorRunner {
 				modelId: model.id,
 				name: model.displayName?.trim() || model.id,
 				...(model.variants?.find((variant) => variant.isDefault) ? { current: true } : {}),
+				...(model.parameters && model.parameters.length > 0
+					? {
+							parameters: model.parameters.map((parameter) => ({
+								id: parameter.id,
+								displayName: parameter.displayName,
+								values: parameter.values.map((value) => ({
+									value: value.value,
+									displayName: value.displayName,
+								})),
+							})),
+						}
+					: {}),
+				...(model.variants && model.variants.length > 0
+					? {
+							variants: model.variants.map((variant) => ({
+								params: variant.params.map((param) => ({
+									id: param.id,
+									value: param.value,
+								})),
+								isDefault: variant.isDefault,
+							})),
+						}
+					: {}),
 			})),
 		);
 	}
@@ -106,7 +129,11 @@ export class CursorSdkRunner implements CursorRunner {
 			const agent = await this.resolveAgent(options);
 			const sendOptions: Parameters<SDKAgent["send"]>[1] & { mode?: "agent" | "plan" } = {};
 			if (options.modelId) {
-				sendOptions.model = { id: normalizeModelId(options.modelId) };
+				sendOptions.model = buildSdkModelSelection(
+					options.modelId,
+					options.thinkingLevel,
+					options.modelCatalog,
+				);
 			}
 			if (options.modeId === "plan") {
 				sendOptions.mode = "plan";
@@ -197,7 +224,13 @@ export class CursorSdkRunner implements CursorRunner {
 					apiKey: this.apiKey,
 					local: { cwd: options.workspace },
 					...(options.modelId
-						? { model: { id: normalizeModelId(options.modelId) } }
+						? {
+								model: buildSdkModelSelection(
+									options.modelId,
+									options.thinkingLevel,
+									options.modelCatalog,
+								),
+							}
 						: {}),
 				});
 				this.agents.set(backendSessionId, { agent, cwd: options.workspace });
@@ -207,7 +240,11 @@ export class CursorSdkRunner implements CursorRunner {
 
 		const agent = await Agent.create({
 			apiKey: this.apiKey,
-			model: { id: normalizeModelId(options.modelId ?? "auto") },
+			model: buildSdkModelSelection(
+				options.modelId ?? "auto",
+				options.thinkingLevel,
+				options.modelCatalog,
+			),
 			local: { cwd: options.workspace },
 		});
 

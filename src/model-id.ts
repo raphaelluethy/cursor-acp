@@ -1,4 +1,7 @@
-import type { CursorModelDescriptor } from "./slash-commands.js";
+import type { ModelSelection } from "@cursor/sdk";
+import type { CursorModelDescriptor, ModelParameterDescriptor } from "./slash-commands.js";
+
+export const THINKING_PARAM_ID = "thinking";
 
 const AUTO_MODEL: CursorModelDescriptor = {
 	modelId: "auto",
@@ -102,4 +105,88 @@ export function resolveModelId(
 	}
 
 	return models.find((model) => model.modelId === normalized)?.modelId ?? normalized;
+}
+
+export function getThinkingParameter(
+	model: CursorModelDescriptor | undefined,
+): ModelParameterDescriptor | undefined {
+	return model?.parameters?.find((parameter) => parameter.id === THINKING_PARAM_ID);
+}
+
+export function resolveDefaultThinkingLevel(
+	model: CursorModelDescriptor | undefined,
+): string | undefined {
+	const thinkingParameter = getThinkingParameter(model);
+	if (!thinkingParameter || thinkingParameter.values.length === 0) {
+		return undefined;
+	}
+
+	const defaultVariant = model?.variants?.find((variant) => variant.isDefault);
+	const variantThinking = defaultVariant?.params.find(
+		(param) => param.id === THINKING_PARAM_ID,
+	)?.value;
+	if (
+		variantThinking &&
+		thinkingParameter.values.some((value) => value.value === variantThinking)
+	) {
+		return variantThinking;
+	}
+
+	return thinkingParameter.values[0]?.value;
+}
+
+export function isValidThinkingLevel(
+	model: CursorModelDescriptor | undefined,
+	thinkingLevel: string | undefined,
+): boolean {
+	if (!thinkingLevel) {
+		return false;
+	}
+
+	const thinkingParameter = getThinkingParameter(model);
+	if (!thinkingParameter) {
+		return false;
+	}
+
+	return thinkingParameter.values.some((value) => value.value === thinkingLevel);
+}
+
+export function resolveThinkingLevel(
+	model: CursorModelDescriptor | undefined,
+	configuredThinkingLevel: string | undefined,
+): string | undefined {
+	if (isValidThinkingLevel(model, configuredThinkingLevel)) {
+		return configuredThinkingLevel;
+	}
+
+	return resolveDefaultThinkingLevel(model);
+}
+
+export function findModelInCatalog(
+	modelCatalog: CursorModelDescriptor[] | undefined,
+	modelId: string | undefined,
+): CursorModelDescriptor | undefined {
+	if (!modelCatalog || typeof modelId !== "string") {
+		return undefined;
+	}
+
+	const normalized = normalizeModelId(modelId);
+	return modelCatalog.find((model) => model.modelId === normalized);
+}
+
+export function buildSdkModelSelection(
+	modelId: string,
+	thinkingLevel?: string,
+	modelCatalog?: CursorModelDescriptor[],
+): ModelSelection {
+	const normalizedModelId = normalizeModelId(modelId);
+	const model = findModelInCatalog(modelCatalog, normalizedModelId);
+	const effectiveThinkingLevel = resolveThinkingLevel(model, thinkingLevel);
+
+	const selection: ModelSelection = { id: normalizedModelId };
+	if (effectiveThinkingLevel && getThinkingParameter(model)) {
+		selection.params = [{ id: THINKING_PARAM_ID, value: effectiveThinkingLevel }];
+	}
+
+	return selection;
 }
