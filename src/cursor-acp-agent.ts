@@ -52,19 +52,41 @@ import {
 	NativeSessionCallbacks,
 } from "./cursor-native-acp-client.js";
 import { CursorCliRunner, type CursorCliRunnerLike } from "./cursor-cli-runner.js";
-import { normalizeModelId, resolveModelId } from "./model-id.js";
+import {
+	applyFastValue,
+	applyThinkingValue,
+	FAST_PARAM_ID,
+	findModelInCatalog,
+	formatFastParameterOptionName,
+	getFastParameter,
+	getThinkingParameter,
+	isValidFastValue,
+	isValidThinkingLevel,
+	normalizeModelId,
+	resolveFastValue,
+	resolveModelId,
+	resolveThinkingLevel,
+	THINKING_PARAM_ID,
+	withCliModelParameters,
+} from "./model-id.js";
 import { parseLeadingSlashCommand, promptToCursorText } from "./prompt-conversion.js";
 import {
-	availableSlashCommands,
+	CustomSlashCommand,
 	CursorModelDescriptor,
 	handleSlashCommand,
+	loadCustomSlashCommands,
+	mergeAvailableSlashCommands,
 	normalizeSlashCommandName,
+	resolveCustomSlashCommandPrompt,
+	resolveSkillSlashCommandPrompt,
 } from "./slash-commands.js";
+import { CustomSkill, loadCustomSkills } from "./skills.js";
 import {
 	availableModes,
 	DEFAULT_MODE_ID,
 	getEnvDefaultMode,
 	getEnvDefaultModel,
+	getEnvDefaultThinking,
 	normalizeModeId,
 	SessionModeId,
 } from "./settings.js";
@@ -222,9 +244,7 @@ function normalizePermissionToolCallTitle(
 ): RequestPermissionRequest["toolCall"] {
 	const rawInput = toolCall.rawInput;
 	const command =
-		isObject(rawInput) && typeof rawInput.command === "string"
-			? rawInput.command
-			: "";
+		isObject(rawInput) && typeof rawInput.command === "string" ? rawInput.command : "";
 
 	return command ? { ...toolCall, title: command } : toolCall;
 }
@@ -284,6 +304,20 @@ function modeCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
 		raw._meta?.default_mode,
 		raw._meta?.defaultConfigOptions?.mode,
 		raw._meta?.default_config_options?.mode,
+		raw.cursor?.modeId,
+		raw.cursor?.mode_id,
+		raw.cursor?.mode,
+		raw.cursor?.defaultModeId,
+		raw.cursor?.default_mode,
+		raw.cursor?.defaultConfigOptions?.mode,
+		raw.cursor?.default_config_options?.mode,
+		raw._meta?.cursor?.modeId,
+		raw._meta?.cursor?.mode_id,
+		raw._meta?.cursor?.mode,
+		raw._meta?.cursor?.defaultModeId,
+		raw._meta?.cursor?.default_mode,
+		raw._meta?.cursor?.defaultConfigOptions?.mode,
+		raw._meta?.cursor?.default_config_options?.mode,
 	];
 }
 
@@ -303,6 +337,99 @@ function modelCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
 		raw._meta?.default_model,
 		raw._meta?.defaultConfigOptions?.model,
 		raw._meta?.default_config_options?.model,
+		raw.cursor?.modelId,
+		raw.cursor?.model_id,
+		raw.cursor?.model,
+		raw.cursor?.defaultModelId,
+		raw.cursor?.default_model,
+		raw.cursor?.defaultConfigOptions?.model,
+		raw.cursor?.default_config_options?.model,
+		raw._meta?.cursor?.modelId,
+		raw._meta?.cursor?.model_id,
+		raw._meta?.cursor?.model,
+		raw._meta?.cursor?.defaultModelId,
+		raw._meta?.cursor?.default_model,
+		raw._meta?.cursor?.defaultConfigOptions?.model,
+		raw._meta?.cursor?.default_config_options?.model,
+	];
+}
+
+function pickParameterValue(...candidates: unknown[]): string | undefined {
+	for (const candidate of candidates) {
+		if (typeof candidate !== "string") {
+			continue;
+		}
+		const trimmed = candidate.trim();
+		if (trimmed.length > 0) {
+			return trimmed;
+		}
+	}
+	return undefined;
+}
+
+function thinkingCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
+	return [
+		raw.thinkingLevel,
+		raw.thinking_level,
+		raw.thinking,
+		raw.defaultThinkingLevel,
+		raw.default_thinking_level,
+		raw.defaultThinking,
+		raw.default_thinking,
+		raw.defaultConfigOptions?.thinking,
+		raw.default_config_options?.thinking,
+		raw._meta?.thinkingLevel,
+		raw._meta?.thinking_level,
+		raw._meta?.thinking,
+		raw._meta?.defaultThinkingLevel,
+		raw._meta?.default_thinking_level,
+		raw._meta?.defaultThinking,
+		raw._meta?.default_thinking,
+		raw._meta?.defaultConfigOptions?.thinking,
+		raw._meta?.default_config_options?.thinking,
+		raw.cursor?.thinkingLevel,
+		raw.cursor?.thinking_level,
+		raw.cursor?.thinking,
+		raw.cursor?.defaultThinkingLevel,
+		raw.cursor?.default_thinking_level,
+		raw.cursor?.defaultThinking,
+		raw.cursor?.default_thinking,
+		raw.cursor?.defaultConfigOptions?.thinking,
+		raw.cursor?.default_config_options?.thinking,
+		raw._meta?.cursor?.thinkingLevel,
+		raw._meta?.cursor?.thinking_level,
+		raw._meta?.cursor?.thinking,
+		raw._meta?.cursor?.defaultThinkingLevel,
+		raw._meta?.cursor?.default_thinking_level,
+		raw._meta?.cursor?.defaultThinking,
+		raw._meta?.cursor?.default_thinking,
+		raw._meta?.cursor?.defaultConfigOptions?.thinking,
+		raw._meta?.cursor?.default_config_options?.thinking,
+	];
+}
+
+function fastCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
+	return [
+		raw.fast,
+		raw.defaultFast,
+		raw.default_fast,
+		raw.defaultConfigOptions?.fast,
+		raw.default_config_options?.fast,
+		raw._meta?.fast,
+		raw._meta?.defaultFast,
+		raw._meta?.default_fast,
+		raw._meta?.defaultConfigOptions?.fast,
+		raw._meta?.default_config_options?.fast,
+		raw.cursor?.fast,
+		raw.cursor?.defaultFast,
+		raw.cursor?.default_fast,
+		raw.cursor?.defaultConfigOptions?.fast,
+		raw.cursor?.default_config_options?.fast,
+		raw._meta?.cursor?.fast,
+		raw._meta?.cursor?.defaultFast,
+		raw._meta?.cursor?.default_fast,
+		raw._meta?.cursor?.defaultConfigOptions?.fast,
+		raw._meta?.cursor?.default_config_options?.fast,
 	];
 }
 
@@ -327,6 +454,10 @@ export interface SessionState {
 	modeId: SessionModeId;
 	modelId?: string;
 	configuredModelId?: string;
+	thinkingLevel?: string;
+	configuredThinkingLevel?: string;
+	fastValue?: string;
+	configuredFastValue?: string;
 	lastAgentModeId: "default" | "yolo";
 	cancelled: boolean;
 	activePrompt?: ActivePromptState;
@@ -334,14 +465,22 @@ export interface SessionState {
 	backendSessionId?: string;
 	/** Populated from native `session/new` or `session/load` when available. */
 	nativeSessionModels?: NewSessionResponse["models"];
+	/** Populated from CLI model listing before native model metadata is available. */
+	fallbackSessionModels?: NewSessionResponse["models"];
 	/** Set when `createBackend` attempted native `session/load`: `true` if load worked, `false` if we fell back to `session/new`. */
 	nativeLoadSucceeded?: boolean;
 	nativeAvailableCommands: AvailableCommand[];
+	customSlashCommands: CustomSlashCommand[];
+	customSkills: CustomSkill[];
 	nativeClient?: NativeSessionBackend;
+	nativeModelId?: string;
+	pendingNativeSessionId?: string;
 	nativeStartPromise?: Promise<void>;
+	configMutationPromise?: Promise<void>;
 	appliedNativeModeId?: NativeModeId;
 	notificationsReady: boolean;
 	pendingNotifications: SessionNotification[];
+	modelCatalog?: CursorModelDescriptor[];
 }
 
 export interface CursorAcpAgentOptions {
@@ -360,6 +499,8 @@ export class CursorAcpAgent implements Agent {
 	private clientCapabilities?: ClientCapabilities;
 	private defaultModeId?: SessionModeId;
 	private defaultModelId?: string;
+	private defaultThinkingLevel?: string;
+	private defaultFastValue?: string;
 
 	private readonly runner: CursorCliRunnerLike;
 	private readonly auth: CursorAuthClient;
@@ -390,6 +531,8 @@ export class CursorAcpAgent implements Agent {
 		const initDefaults = this.extractInitializeDefaults(request);
 		this.defaultModeId = initDefaults.modeId ?? getEnvDefaultMode();
 		this.defaultModelId = initDefaults.modelId ?? getEnvDefaultModel();
+		this.defaultThinkingLevel = initDefaults.thinkingLevel ?? getEnvDefaultThinking();
+		this.defaultFastValue = initDefaults.fastValue;
 
 		const authMethod: NonNullable<InitializeResponse["authMethods"]>[number] = {
 			id: "cursor_login",
@@ -447,7 +590,8 @@ export class CursorAcpAgent implements Agent {
 			mcpServers: params.mcpServers,
 			preferredModeId: this.extractRequestedInitialMode(params),
 			preferredModelId: this.extractRequestedInitialModel(params),
-			warmNativeBackend: true,
+			preferredThinkingLevel: this.extractRequestedInitialThinking(params),
+			preferredFastValue: this.extractRequestedInitialFast(params),
 		});
 	}
 
@@ -467,17 +611,15 @@ export class CursorAcpAgent implements Agent {
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
 			preferredModeId: meta.modeId,
+			preferredThinkingLevel: meta.thinkingLevel,
+			preferredFastValue: meta.fastValue,
+			preferredBackendSessionId: meta.backendSessionId,
 		});
 
 		const session = this.requireSession(params.sessionId);
-		const loggedIn = (await this.auth.status()).loggedIn;
 
 		return await this.withDeferredSessionNotifications(session, async () => {
 			const notificationStartIndex = session.pendingNotifications.length;
-			if (loggedIn && meta.backendSessionId) {
-				await this.createBackend(session, { loadNativeSessionId: meta.backendSessionId });
-			}
-
 			if (
 				filePath &&
 				!this.hasConversationHistoryNotifications(
@@ -564,18 +706,15 @@ export class CursorAcpAgent implements Agent {
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
 			preferredModeId: meta.modeId,
+			preferredThinkingLevel: meta.thinkingLevel,
+			preferredFastValue: meta.fastValue,
+			preferredBackendSessionId: meta.backendSessionId,
 		});
 
 		const session = this.requireSession(params.sessionId);
 
-		const loggedIn = (await this.auth.status()).loggedIn;
-
 		return await this.withDeferredSessionNotifications(session, async () => {
 			const notificationStartIndex = session.pendingNotifications.length;
-			if (loggedIn && meta.backendSessionId) {
-				await this.createBackend(session, { loadNativeSessionId: meta.backendSessionId });
-			}
-
 			if (
 				!this.hasConversationHistoryNotifications(
 					session.pendingNotifications.slice(notificationStartIndex),
@@ -608,7 +747,7 @@ export class CursorAcpAgent implements Agent {
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
 		const session = this.requireSession(params.sessionId);
-		const promptText = promptToCursorText(params);
+		let promptText = promptToCursorText(params);
 
 		const slash = parseLeadingSlashCommand(promptText);
 		if (slash.hasSlash) {
@@ -617,16 +756,16 @@ export class CursorAcpAgent implements Agent {
 					session,
 					auth: this.auth,
 					listModels: async () => await this.runner.listModels(),
-					availableCommands: availableSlashCommands(session.nativeAvailableCommands),
+					availableCommands: this.availableCommandsForSession(session),
 					onModeChanged: async (modeId) => {
 						await this.applySessionMode(session, modeId);
 					},
 					onModelChanged: async (modelId) => {
 						session.modelId = modelId;
 						session.configuredModelId = modelId;
-						if (session.nativeClient?.alive) {
-							await this.restartBackend(session);
-						}
+						this.syncModelParameters(session);
+						await this.applyNativeModelIfConnected(session);
+						await this.persistSessionMeta(session);
 					},
 				});
 
@@ -654,6 +793,16 @@ export class CursorAcpAgent implements Agent {
 					}
 
 					return { stopReason: "end_turn" };
+				}
+
+				const customPrompt =
+					resolveCustomSlashCommandPrompt(
+						slash.command,
+						slash.args,
+						session.customSlashCommands,
+					) ?? resolveSkillSlashCommandPrompt(slash.command, session.customSkills);
+				if (customPrompt) {
+					promptText = customPrompt;
 				}
 			}
 		}
@@ -723,14 +872,18 @@ export class CursorAcpAgent implements Agent {
 		params: SetSessionModelRequest,
 	): Promise<SetSessionModelResponse | void> {
 		const session = this.requireSession(params.sessionId);
-		if (session.activePrompt || session.activeRun) {
-			throw RequestError.invalidParams("Cannot change model during an active prompt");
-		}
+		return await this.withSessionConfigMutation(session, async () => {
+			if (session.activePrompt || session.activeRun) {
+				throw RequestError.invalidParams("Cannot change model during an active prompt");
+			}
 
-		session.modelId = normalizeModelId(params.modelId);
-		session.configuredModelId = session.modelId;
-		await this.restartBackend(session);
-		return {};
+			session.modelId = normalizeModelId(params.modelId);
+			session.configuredModelId = session.modelId;
+			this.syncModelParameters(session);
+			await this.applyNativeModelIfConnected(session);
+			await this.persistSessionMeta(session);
+			return {};
+		});
 	}
 
 	async setSessionConfigOption(
@@ -743,26 +896,141 @@ export class CursorAcpAgent implements Agent {
 			);
 		}
 
-		if (params.configId === "mode") {
-			const modeId = normalizeModeId(params.value);
+		return await this.withSessionConfigMutation(session, async () => {
+			return await this.setSessionConfigOptionLocked(session, params.configId, params.value);
+		});
+	}
+
+	private async setSessionConfigOptionLocked(
+		session: SessionState,
+		configId: string,
+		value: string,
+	): Promise<SetSessionConfigOptionResponse> {
+		if (configId === "mode") {
+			const modeId = normalizeModeId(value);
 			if (!modeId) {
-				throw RequestError.invalidParams(`Invalid mode: ${params.value}`);
+				throw RequestError.invalidParams(`Invalid mode: ${value}`);
 			}
 			await this.applySessionMode(session, modeId);
 			return { configOptions: this.buildConfigOptions(session) };
 		}
 
-		if (params.configId === "model") {
+		if (configId === "model") {
 			if (session.activePrompt || session.activeRun) {
 				throw RequestError.invalidParams("Cannot change model during an active prompt");
 			}
-			session.modelId = normalizeModelId(params.value);
+			session.modelId = normalizeModelId(value);
 			session.configuredModelId = session.modelId;
-			await this.restartBackend(session);
+			this.syncModelParameters(session);
+			await this.applyNativeModelIfConnected(session);
+			await this.persistSessionMeta(session);
 			return { configOptions: this.buildConfigOptions(session) };
 		}
 
-		throw RequestError.invalidParams(`Unknown config option: ${params.configId}`);
+		if (configId === FAST_PARAM_ID) {
+			if (session.activePrompt || session.activeRun) {
+				throw RequestError.invalidParams("Cannot change fast mode during an active prompt");
+			}
+			const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
+			if (!getFastParameter(currentModel)) {
+				throw RequestError.invalidParams(
+					"Fast mode is not supported for the current model",
+				);
+			}
+			if (!isValidFastValue(currentModel, value)) {
+				throw RequestError.invalidParams(`Invalid fast mode: ${value}`);
+			}
+			const nextModelId = applyFastValue(session.modelCatalog, session.modelId, value);
+			if (!nextModelId) {
+				throw RequestError.invalidParams(`No model variant for fast mode: ${value}`);
+			}
+			session.modelId = nextModelId;
+			session.configuredModelId = nextModelId;
+			session.fastValue = value;
+			session.configuredFastValue = value;
+			this.syncModelParameters(session);
+			await this.applyNativeModelIfConnected(session);
+			await this.persistSessionMeta(session);
+			return { configOptions: this.buildConfigOptions(session) };
+		}
+
+		if (configId === THINKING_PARAM_ID) {
+			if (session.activePrompt || session.activeRun) {
+				throw RequestError.invalidParams(
+					"Cannot change thinking level during an active prompt",
+				);
+			}
+			const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
+			if (!getThinkingParameter(currentModel)) {
+				throw RequestError.invalidParams(
+					"Thinking level is not supported for the current model",
+				);
+			}
+			if (!isValidThinkingLevel(currentModel, value)) {
+				throw RequestError.invalidParams(`Invalid thinking level: ${value}`);
+			}
+			const nextModelId = applyThinkingValue(session.modelCatalog, session.modelId, value);
+			if (!nextModelId) {
+				throw RequestError.invalidParams(`No model variant for thinking level: ${value}`);
+			}
+			session.modelId = nextModelId;
+			session.configuredModelId = nextModelId;
+			session.thinkingLevel = value;
+			session.configuredThinkingLevel = value;
+			this.syncModelParameters(session);
+			await this.applyNativeModelIfConnected(session);
+			await this.persistSessionMeta(session);
+			return { configOptions: this.buildConfigOptions(session) };
+		}
+
+		throw RequestError.invalidParams(`Unknown config option: ${configId}`);
+	}
+
+	private async withSessionConfigMutation<T>(
+		session: SessionState,
+		work: () => Promise<T>,
+	): Promise<T> {
+		const previous = session.configMutationPromise ?? Promise.resolve();
+		const current = previous.catch(() => {}).then(work);
+		const drain = current.then(
+			() => {},
+			() => {},
+		);
+		session.configMutationPromise = drain;
+
+		try {
+			return await current;
+		} finally {
+			if (session.configMutationPromise === drain) {
+				session.configMutationPromise = undefined;
+			}
+		}
+	}
+
+	private async applyNativeModelIfConnected(session: SessionState): Promise<void> {
+		if (!session.nativeClient?.alive || !session.backendSessionId || !session.modelId) {
+			return;
+		}
+		if (session.nativeModelId === session.modelId) {
+			return;
+		}
+
+		try {
+			await session.nativeClient.setNativeModel(session.modelId);
+			session.nativeModelId = session.modelId;
+			if (session.nativeSessionModels) {
+				session.nativeSessionModels.currentModelId = session.modelId;
+			}
+			if (session.fallbackSessionModels) {
+				session.fallbackSessionModels.currentModelId = session.modelId;
+			}
+		} catch (error) {
+			session.nativeModelId = undefined;
+			this.logger.warn?.(
+				"[cursor-acp] Native ACP did not accept model update; will apply on next prompt",
+				error,
+			);
+		}
 	}
 
 	async extMethod(
@@ -804,10 +1072,15 @@ export class CursorAcpAgent implements Agent {
 		mcpServers?: NewSessionRequest["mcpServers"];
 		preferredModeId?: SessionModeId;
 		preferredModelId?: string;
+		preferredThinkingLevel?: string;
+		preferredFastValue?: string;
+		preferredBackendSessionId?: string;
 		warmNativeBackend?: boolean;
 	}): Promise<NewSessionResponse> {
 		const modeId = params.preferredModeId ?? this.defaultModeId ?? DEFAULT_MODE_ID;
 		const configuredModelId = params.preferredModelId ?? this.defaultModelId;
+		const configuredThinkingLevel = params.preferredThinkingLevel ?? this.defaultThinkingLevel;
+		const configuredFastValue = params.preferredFastValue ?? this.defaultFastValue;
 		const session: SessionState = {
 			sessionId: params.sessionId,
 			cwd: params.cwd,
@@ -815,19 +1088,33 @@ export class CursorAcpAgent implements Agent {
 			modeId,
 			modelId: configuredModelId,
 			configuredModelId,
+			configuredThinkingLevel,
+			configuredFastValue,
 			lastAgentModeId: modeId === "yolo" ? "yolo" : "default",
 			cancelled: false,
 			nativeAvailableCommands: [],
+			customSlashCommands: [],
+			customSkills: [],
 			notificationsReady: false,
 			pendingNotifications: [],
+			pendingNativeSessionId: params.preferredBackendSessionId,
 		};
 
 		this.sessions[session.sessionId] = session;
 
+		await this.loadSessionSlashExtensions(session);
+		const fallbackModels = await this.getAvailableModels(session);
+		session.fallbackSessionModels = fallbackModels;
+		await this.emitOrQueueNotification(session, {
+			sessionId: session.sessionId,
+			update: {
+				sessionUpdate: "available_commands_update",
+				availableCommands: this.availableCommandsForSession(session),
+			},
+		});
 		if (params.warmNativeBackend) {
 			this.startNativeBackendWarmup(session);
 		}
-		const fallbackModels = await this.getAvailableModels(session);
 		session.notificationsReady = true;
 		setTimeout(() => {
 			void this.flushPendingNotifications(session);
@@ -842,6 +1129,28 @@ export class CursorAcpAgent implements Agent {
 				session.nativeSessionModels ?? fallbackModels,
 			),
 		};
+	}
+
+	private async loadSessionSlashExtensions(session: SessionState): Promise<void> {
+		const [customSlashCommands, customSkills] = await Promise.allSettled([
+			loadCustomSlashCommands(session.cwd),
+			loadCustomSkills(session.cwd),
+		]);
+
+		if (customSlashCommands.status === "fulfilled") {
+			session.customSlashCommands = customSlashCommands.value;
+		} else {
+			this.logger.warn?.(
+				"[cursor-acp] Unable to load custom slash commands",
+				customSlashCommands.reason,
+			);
+		}
+
+		if (customSkills.status === "fulfilled") {
+			session.customSkills = customSkills.value;
+		} else {
+			this.logger.warn?.("[cursor-acp] Unable to load custom skills", customSkills.reason);
+		}
 	}
 
 	private startNativeBackendWarmup(session: SessionState): void {
@@ -888,9 +1197,19 @@ export class CursorAcpAgent implements Agent {
 		return pickNormalizedModelId(...modelCandidatesFrom(looseSessionDefaults(params)));
 	}
 
+	private extractRequestedInitialThinking(params: NewSessionRequest): string | undefined {
+		return pickParameterValue(...thinkingCandidatesFrom(looseSessionDefaults(params)));
+	}
+
+	private extractRequestedInitialFast(params: NewSessionRequest): string | undefined {
+		return pickParameterValue(...fastCandidatesFrom(looseSessionDefaults(params)));
+	}
+
 	private extractInitializeDefaults(request: InitializeRequest): {
 		modeId?: SessionModeId;
 		modelId?: string;
+		thinkingLevel?: string;
+		fastValue?: string;
 	} {
 		const raw = request as ExtendedInitializeRequest;
 
@@ -903,6 +1222,14 @@ export class CursorAcpAgent implements Agent {
 				...modelCandidatesFrom(raw),
 				...modelCandidatesFrom(raw.clientCapabilities?._meta ?? {}),
 			),
+			thinkingLevel: pickParameterValue(
+				...thinkingCandidatesFrom(raw),
+				...thinkingCandidatesFrom(raw.clientCapabilities?._meta ?? {}),
+			),
+			fastValue: pickParameterValue(
+				...fastCandidatesFrom(raw),
+				...fastCandidatesFrom(raw.clientCapabilities?._meta ?? {}),
+			),
 		};
 	}
 
@@ -910,6 +1237,7 @@ export class CursorAcpAgent implements Agent {
 		session: SessionState,
 		options?: { loadNativeSessionId?: string },
 	): Promise<void> {
+		const requestedModelId = session.modelId;
 		const nativeClient = this.createNativeClient(
 			{
 				clientCapabilities: this.clientCapabilities,
@@ -944,6 +1272,7 @@ export class CursorAcpAgent implements Agent {
 					if (session.nativeClient === nativeClient) {
 						session.nativeClient = undefined;
 						session.backendSessionId = undefined;
+						session.nativeModelId = undefined;
 					}
 					this.logger.error("[cursor-acp] native ACP backend closed", error);
 				},
@@ -952,27 +1281,48 @@ export class CursorAcpAgent implements Agent {
 
 		session.nativeClient = nativeClient;
 
-		const loadId = options?.loadNativeSessionId;
+		const loadId = options?.loadNativeSessionId ?? session.pendingNativeSessionId;
 
 		if (loadId) {
 			try {
 				const loaded = await nativeClient.loadSessionBackend(loadId);
+				if (!this.isCurrentNativeClient(session, nativeClient)) {
+					await nativeClient.close();
+					return;
+				}
 				session.backendSessionId = loadId;
+				session.pendingNativeSessionId = undefined;
+				session.nativeModelId = requestedModelId;
 				await this.applyNativeSessionModelsAndModes(session, loaded);
 				session.nativeLoadSucceeded = true;
 			} catch (error) {
+				if (!this.isCurrentNativeClient(session, nativeClient)) {
+					return;
+				}
 				this.logger.warn?.(
 					"[cursor-acp] Native session/load failed; starting a new native session",
 					error,
 				);
 				session.nativeLoadSucceeded = false;
 				const response = await nativeClient.createSessionBackend();
+				if (!this.isCurrentNativeClient(session, nativeClient)) {
+					await nativeClient.close();
+					return;
+				}
 				session.backendSessionId = response.sessionId;
+				session.pendingNativeSessionId = undefined;
+				session.nativeModelId = requestedModelId;
 				await this.applyNativeSessionModelsAndModes(session, response);
 			}
 		} else {
 			const response = await nativeClient.createSessionBackend();
+			if (!this.isCurrentNativeClient(session, nativeClient)) {
+				await nativeClient.close();
+				return;
+			}
 			session.backendSessionId = response.sessionId;
+			session.pendingNativeSessionId = undefined;
+			session.nativeModelId = requestedModelId;
 			await this.applyNativeSessionModelsAndModes(session, response);
 		}
 
@@ -983,6 +1333,13 @@ export class CursorAcpAgent implements Agent {
 		}
 
 		await this.applyNativeModeAfterConnect(session, nativeClient);
+	}
+
+	private isCurrentNativeClient(
+		session: SessionState,
+		nativeClient: NativeSessionBackend,
+	): boolean {
+		return session.nativeClient === nativeClient && nativeClient.alive;
 	}
 
 	private async applyNativeSessionModelsAndModes(
@@ -1003,9 +1360,20 @@ export class CursorAcpAgent implements Agent {
 				);
 			}
 
-			const availableModels =
+			const modelCatalog = withCliModelParameters(
 				listedModels.length > 0
-					? listedModels.map((model) => ({
+					? listedModels
+					: loaded.models.availableModels.map((model) => ({
+							modelId: normalizeModelId(model.modelId),
+							name: model.name,
+							current: loaded.models?.currentModelId === model.modelId,
+						})),
+			);
+			session.modelCatalog = modelCatalog;
+
+			const availableModels =
+				modelCatalog.length > 0
+					? modelCatalog.map((model) => ({
 							modelId: model.modelId,
 							name: this.modelDisplayName(model.modelId, model.name),
 							description: this.modelHoverDescription(model.modelId, model.name),
@@ -1034,21 +1402,21 @@ export class CursorAcpAgent implements Agent {
 
 			const resolvedConfiguredModelId = resolveModelId(
 				session.configuredModelId,
-				listedModels,
+				modelCatalog,
 			);
 			if (resolvedConfiguredModelId) {
 				session.configuredModelId = resolvedConfiguredModelId;
 			}
-			const resolvedSessionModelId = resolveModelId(session.modelId, listedModels);
+			const resolvedSessionModelId = resolveModelId(session.modelId, modelCatalog);
 			const resolvedNativeCurrentModelId = resolveModelId(
 				loaded.models.currentModelId,
-				listedModels,
+				modelCatalog,
 			);
 
 			const currentModelId =
 				resolvedConfiguredModelId ??
 				resolvedNativeCurrentModelId ??
-				listedModels.find((model) => model.current)?.modelId ??
+				modelCatalog.find((model) => model.current)?.modelId ??
 				resolvedSessionModelId ??
 				availableModels[0]?.modelId;
 
@@ -1059,6 +1427,10 @@ export class CursorAcpAgent implements Agent {
 			};
 			if (currentModelId) {
 				session.modelId = currentModelId;
+			}
+			this.syncModelParameters(session);
+			if (session.nativeSessionModels && session.modelId) {
+				session.nativeSessionModels.currentModelId = session.modelId;
 			}
 		}
 
@@ -1143,18 +1515,27 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	private async ensureBackend(session: SessionState): Promise<void> {
-		if (session.nativeClient?.alive) {
-			return;
-		}
-
 		if (session.nativeStartPromise) {
 			await session.nativeStartPromise;
 			if (session.nativeClient?.alive) {
+				if (!session.modelId || session.nativeModelId === session.modelId) {
+					return;
+				}
+				await this.applyNativeModelIfConnected(session);
 				return;
 			}
 		}
 
-		await this.createBackend(session);
+		if (session.nativeClient?.alive) {
+			if (session.modelId && session.nativeModelId !== session.modelId) {
+				await this.applyNativeModelIfConnected(session);
+			}
+			return;
+		}
+
+		await this.createBackend(session, {
+			loadNativeSessionId: session.pendingNativeSessionId,
+		});
 	}
 
 	private async restartBackend(session: SessionState): Promise<void> {
@@ -1162,9 +1543,11 @@ export class CursorAcpAgent implements Agent {
 			throw RequestError.invalidParams("Cannot restart backend during an active prompt");
 		}
 
+		session.nativeStartPromise = undefined;
 		await session.nativeClient?.close();
 		session.nativeClient = undefined;
 		session.backendSessionId = undefined;
+		session.nativeModelId = undefined;
 		await this.createBackend(session);
 	}
 
@@ -1175,6 +1558,9 @@ export class CursorAcpAgent implements Agent {
 		} catch (error) {
 			this.logger.error("[cursor-acp] Unable to list models", error);
 		}
+
+		listed = withCliModelParameters(listed);
+		session.modelCatalog = listed;
 
 		const configuredModelId = resolveModelId(session.configuredModelId, listed);
 		if (configuredModelId) {
@@ -1197,6 +1583,8 @@ export class CursorAcpAgent implements Agent {
 			session.modelId = listed.find((model) => model.current)?.modelId ?? listed[0]?.modelId;
 		}
 
+		this.syncModelParameters(session);
+
 		return {
 			availableModels,
 			currentModelId: session.modelId ?? "auto",
@@ -1205,7 +1593,8 @@ export class CursorAcpAgent implements Agent {
 
 	private buildConfigOptions(
 		session: SessionState,
-		models: NewSessionResponse["models"] = session.nativeSessionModels,
+		models: NewSessionResponse["models"] = session.nativeSessionModels ??
+			session.fallbackSessionModels,
 	): SessionConfigOption[] {
 		const modeState = availableModes(session.modeId);
 		const configOptions: SessionConfigOption[] = [
@@ -1225,13 +1614,46 @@ export class CursorAcpAgent implements Agent {
 		];
 
 		if (models) {
+			const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
+			const thinkingParameter = getThinkingParameter(currentModel);
+			if (thinkingParameter && session.thinkingLevel) {
+				configOptions.push({
+					id: THINKING_PARAM_ID,
+					name: thinkingParameter.displayName ?? "Thinking",
+					description: "Thinking or reasoning level for the selected model",
+					category: "thought_level",
+					type: "select",
+					currentValue: session.thinkingLevel,
+					options: thinkingParameter.values.map((value) => ({
+						value: value.value,
+						name: value.displayName ?? value.value,
+					})),
+				});
+			}
+
+			const fastParameter = getFastParameter(currentModel);
+			if (fastParameter && session.fastValue) {
+				configOptions.push({
+					id: FAST_PARAM_ID,
+					name: fastParameter.displayName ?? "Fast",
+					description: "Fast response variant for the selected model",
+					category: "_model_variant",
+					type: "select",
+					currentValue: session.fastValue,
+					options: fastParameter.values.map((value) => ({
+						value: value.value,
+						name: formatFastParameterOptionName(value.value, value.displayName),
+					})),
+				});
+			}
+
 			configOptions.push({
 				id: "model",
 				name: "Model",
 				description: "AI model to use",
 				category: "model",
 				type: "select",
-				currentValue: models.currentModelId,
+				currentValue: session.modelId ?? models.currentModelId,
 				options: models.availableModels.map((model) => ({
 					value: model.modelId,
 					name: model.name,
@@ -1241,6 +1663,68 @@ export class CursorAcpAgent implements Agent {
 		}
 
 		return configOptions;
+	}
+
+	private syncModelParameters(session: SessionState): void {
+		this.syncThinkingLevelForModel(session);
+		this.syncFastValueForModel(session);
+
+		let nextModelId = session.modelId;
+		if (session.configuredThinkingLevel) {
+			nextModelId =
+				applyThinkingValue(
+					session.modelCatalog,
+					nextModelId,
+					session.configuredThinkingLevel,
+				) ?? nextModelId;
+		}
+		if (session.configuredFastValue) {
+			nextModelId =
+				applyFastValue(session.modelCatalog, nextModelId, session.configuredFastValue) ??
+				nextModelId;
+		}
+		if (nextModelId && nextModelId !== session.modelId) {
+			session.modelId = nextModelId;
+			session.configuredModelId = nextModelId;
+			this.syncThinkingLevelForModel(session);
+			this.syncFastValueForModel(session);
+		}
+	}
+
+	private syncThinkingLevelForModel(session: SessionState): void {
+		const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
+		const thinkingParameter = getThinkingParameter(currentModel);
+		if (!thinkingParameter) {
+			session.thinkingLevel = undefined;
+			return;
+		}
+
+		const resolved = resolveThinkingLevel(currentModel, session.configuredThinkingLevel);
+		session.thinkingLevel = resolved;
+		if (
+			session.configuredThinkingLevel &&
+			!isValidThinkingLevel(currentModel, session.configuredThinkingLevel)
+		) {
+			session.configuredThinkingLevel = resolved;
+		}
+	}
+
+	private syncFastValueForModel(session: SessionState): void {
+		const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
+		const fastParameter = getFastParameter(currentModel);
+		if (!fastParameter) {
+			session.fastValue = undefined;
+			return;
+		}
+
+		const resolved = resolveFastValue(currentModel, session.configuredFastValue);
+		session.fastValue = resolved;
+		if (
+			session.configuredFastValue &&
+			!isValidFastValue(currentModel, session.configuredFastValue)
+		) {
+			session.configuredFastValue = resolved;
+		}
 	}
 
 	private modelHoverDescription(modelId: string, baseDescription: string): string {
@@ -1528,7 +2012,7 @@ export class CursorAcpAgent implements Agent {
 				sessionId: session.sessionId,
 				update: {
 					sessionUpdate: "available_commands_update",
-					availableCommands: availableSlashCommands(session.nativeAvailableCommands),
+					availableCommands: this.availableCommandsForSession(session),
 				},
 			});
 			return;
@@ -1567,6 +2051,14 @@ export class CursorAcpAgent implements Agent {
 		const normalized = normalizeSlashCommandName(commandName).toLowerCase();
 		return session.nativeAvailableCommands.some(
 			(command) => normalizeSlashCommandName(command.name).toLowerCase() === normalized,
+		);
+	}
+
+	private availableCommandsForSession(session: SessionState): AvailableCommand[] {
+		return mergeAvailableSlashCommands(
+			session.nativeAvailableCommands,
+			session.customSlashCommands,
+			session.customSkills,
 		);
 	}
 
@@ -1702,6 +2194,8 @@ export class CursorAcpAgent implements Agent {
 		await recordSessionMeta(session.cwd, session.sessionId, {
 			backendSessionId: session.backendSessionId,
 			modeId: session.modeId,
+			thinkingLevel: session.configuredThinkingLevel ?? session.thinkingLevel,
+			fastValue: session.configuredFastValue ?? session.fastValue,
 		});
 	}
 

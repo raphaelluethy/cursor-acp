@@ -15,6 +15,8 @@ import {
 	SessionNotification,
 	SetSessionModeRequest,
 	SetSessionModeResponse,
+	SetSessionModelRequest,
+	SetSessionModelResponse,
 	WriteTextFileRequest,
 	WriteTextFileResponse,
 	ndJsonStream,
@@ -62,6 +64,7 @@ export interface NativeSessionBackend {
 	prompt(promptText: string): Promise<PromptResponse>;
 	restartBackend(): Promise<NewSessionResponse>;
 	setNativeMode(modeId: NativeModeId): Promise<SetSessionModeResponse | void>;
+	setNativeModel(modelId: string): Promise<SetSessionModelResponse | void>;
 }
 
 class NativeClientHandler implements Client {
@@ -195,6 +198,17 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 			modeId,
 		};
 		return await connection.setSessionMode(request);
+	}
+
+	async setNativeModel(modelId: string): Promise<SetSessionModelResponse | void> {
+		await this.ensureStarted();
+		const connection = this.requireConnection();
+
+		const request: SetSessionModelRequest = {
+			sessionId: this.requireNativeSessionId(),
+			modelId: normalizeModelId(modelId),
+		};
+		return await connection.unstable_setSessionModel(request);
 	}
 
 	async cancel(): Promise<void> {

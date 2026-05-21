@@ -58,6 +58,7 @@ export interface CursorAcpAgentTestAccess {
 		session: SessionState,
 		loaded: LoadSessionResponse,
 	): Promise<void>;
+	buildConfigOptions(session: SessionState): NewSessionResponse["configOptions"];
 	restartBackend(session: SessionState): Promise<void>;
 }
 

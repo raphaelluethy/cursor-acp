@@ -12,10 +12,29 @@ import {
 } from "./settings.js";
 import { CustomSkill, resolveSkillPrompt } from "./skills.js";
 
+export interface ModelParameterOption {
+	value: string;
+	displayName?: string;
+}
+
+export interface ModelParameterDescriptor {
+	id: string;
+	displayName?: string;
+	values: ModelParameterOption[];
+}
+
+export interface ModelVariantDescriptor {
+	modelId?: string;
+	params: Array<{ id: string; value: string }>;
+	isDefault?: boolean;
+}
+
 export interface CursorModelDescriptor {
 	modelId: string;
 	name: string;
 	current?: boolean;
+	parameters?: ModelParameterDescriptor[];
+	variants?: ModelVariantDescriptor[];
 }
 
 export interface SlashSessionState {
@@ -29,6 +48,10 @@ export interface CustomSlashCommand {
 	argumentHint?: string;
 	template: string;
 	sourcePath: string;
+}
+
+interface CommandRoot {
+	root: string;
 }
 
 export interface SlashCommandContext {
@@ -62,6 +85,39 @@ const BUILTIN_SLASH_COMMANDS: AvailableCommand[] = [
 	{ name: "status", description: "Show login status", input: null },
 ];
 
+const NATIVE_PASSTHROUGH_SLASH_COMMANDS: AvailableCommand[] = [
+	{
+		name: "copy-request-id",
+		description: "Copy the last request ID to clipboard",
+		input: null,
+	},
+	{
+		name: "simplify",
+		description: "Find low-info comments, one-off helpers, perf issues, and reuse opportunities",
+		input: null,
+	},
+	{
+		name: "worktree",
+		description: "Create a detached-head git worktree",
+		input: { hint: "[branch=<name>]" },
+	},
+	{
+		name: "apply-worktree",
+		description: "Apply detached worktree changes back into the main worktree",
+		input: null,
+	},
+	{
+		name: "delete-worktree",
+		description: "Delete a detached-head git worktree",
+		input: null,
+	},
+	{
+		name: "best-of-n",
+		description: "Fan out one task across multiple models and compare results",
+		input: { hint: "<models> <task>" },
+	},
+];
+
 export function normalizeSlashCommandName(commandName: string): string {
 	const trimmed = commandName.trim().replace(/^\/+/, "");
 	const withoutMcpSuffix = trimmed.replace(/\s+\(MCP\)$/i, "");
@@ -69,9 +125,46 @@ export function normalizeSlashCommandName(commandName: string): string {
 }
 
 export function availableSlashCommands(extraCommands: AvailableCommand[] = []): AvailableCommand[] {
+	return mergeAvailableSlashCommands(extraCommands);
+}
+
+export function mergeAvailableSlashCommands(
+	extraCommands: AvailableCommand[] = [],
+	customCommands: CustomSlashCommand[] = [],
+	skills: CustomSkill[] = [],
+): AvailableCommand[] {
 	const deduped = new Map<string, AvailableCommand>();
 	for (const command of extraCommands) {
 		deduped.set(normalizeSlashCommandName(command.name).toLowerCase(), command);
+	}
+
+	for (const command of customCommands) {
+		const key = normalizeSlashCommandName(command.name).toLowerCase();
+		if (!deduped.has(key)) {
+			deduped.set(key, {
+				name: command.name,
+				description: command.description,
+				input: command.argumentHint ? { hint: command.argumentHint } : null,
+			});
+		}
+	}
+
+	for (const skill of skills) {
+		const key = normalizeSlashCommandName(skill.name).toLowerCase();
+		if (!deduped.has(key)) {
+			deduped.set(key, {
+				name: skill.name,
+				description: `${skill.description} (${skill.origin} skill)`,
+				input: null,
+			});
+		}
+	}
+
+	for (const command of NATIVE_PASSTHROUGH_SLASH_COMMANDS) {
+		const key = normalizeSlashCommandName(command.name).toLowerCase();
+		if (!deduped.has(key)) {
+			deduped.set(key, command);
+		}
 	}
 
 	for (const command of BUILTIN_SLASH_COMMANDS) {
@@ -172,9 +265,22 @@ function firstHeading(markdown: string): string | undefined {
 	return heading.length > 0 ? heading : undefined;
 }
 
-async function readCustomCommand(filePath: string): Promise<CustomSlashCommand | null> {
-	const fileName = path.basename(filePath, ".md").trim();
-	if (!fileName) {
+function commandNameFromPath(filePath: string, root: string): string {
+	const relative = path.relative(root, filePath);
+	const parsed = path.parse(relative);
+	const withoutExtension = path.join(parsed.dir, parsed.name);
+	return withoutExtension
+		.split(path.sep)
+		.filter((part) => part.length > 0)
+		.join("/");
+}
+
+async function readCustomCommand(
+	filePath: string,
+	root: string,
+): Promise<CustomSlashCommand | null> {
+	const name = commandNameFromPath(filePath, root).trim();
+	if (!name) {
 		return null;
 	}
 
@@ -198,7 +304,7 @@ async function readCustomCommand(filePath: string): Promise<CustomSlashCommand |
 		`Custom command from ${path.basename(filePath)}`;
 
 	return {
-		name: fileName,
+		name,
 		description,
 		argumentHint: argumentHint || undefined,
 		template,
@@ -210,20 +316,27 @@ export async function loadCustomSlashCommands(
 	workspace: string,
 	homeDirectory: string = os.homedir(),
 ): Promise<CustomSlashCommand[]> {
-	const commandRoots = [
-		path.join(workspace, ".cursor", "commands"),
-		path.join(homeDirectory, ".cursor", "commands"),
+	const commandRoots: CommandRoot[] = [
+		{ root: path.join(workspace, ".cursor", "commands") },
+		{ root: path.join(workspace, ".agents", "commands") },
+		{ root: path.join(homeDirectory, ".cursor", "commands") },
+		{ root: path.join(homeDirectory, ".agents", "commands") },
 	];
 
 	const byName = new Map<string, CustomSlashCommand>();
-	for (const root of commandRoots) {
+	for (const { root } of commandRoots) {
 		const files = await collectMarkdownFiles(root);
 		for (const file of files) {
-			const command = await readCustomCommand(file);
+			let command: CustomSlashCommand | null;
+			try {
+				command = await readCustomCommand(file, root);
+			} catch {
+				continue;
+			}
 			if (!command) {
 				continue;
 			}
-			const key = command.name.toLowerCase();
+			const key = normalizeSlashCommandName(command.name).toLowerCase();
 			if (!byName.has(key)) {
 				byName.set(key, command);
 			}
@@ -270,8 +383,10 @@ export function resolveCustomSlashCommandPrompt(
 	args: string,
 	customCommands: CustomSlashCommand[],
 ): string | null {
-	const normalized = commandName.toLowerCase();
-	const command = customCommands.find((item) => item.name.toLowerCase() === normalized);
+	const normalized = normalizeSlashCommandName(commandName).toLowerCase();
+	const command = customCommands.find(
+		(item) => normalizeSlashCommandName(item.name).toLowerCase() === normalized,
+	);
 	if (!command) {
 		return null;
 	}

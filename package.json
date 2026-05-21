@@ -1,6 +1,6 @@
 {
   "name": "@raphael/cursor-acp",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "ACP adapter backed by Cursor Agent CLI",
   "main": "dist/lib.js",
   "types": "dist/lib.d.ts",

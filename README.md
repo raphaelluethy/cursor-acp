@@ -30,6 +30,7 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - **Session persistence & history replay**: Stores visible history locally and replays it on resume/load
 - **Session listing**: Lists past local sessions with optional cwd filtering and pagination
 - **Model listing and best-effort model selection**: Keeps `/model` support while native ACP has no stable model API
+- **Fast and thinking controls**: Derives ACP `fast` and `thinking` config options from Cursor CLI model variants and maps selections back to concrete CLI model ids
 - **Authentication helpers**: `/login`, `/logout`, `/status`, plus terminal-auth metadata for ACP clients that support it
 - **Prompt flattening for ACP clients**: Keeps embedded context and image prompts working by converting them to text before forwarding to native ACP
 - **Optional Yolo mode** (`yolo`): Auto-approves native ACP permission requests when explicitly selected
@@ -48,7 +49,7 @@ Recent `cursor-acp` versions changed backend strategy more than once. The curren
 
 ### Configuration defaults
 
-Prefer ACP client defaults, such as Zed’s inline `default_mode` / `default_model` fields on the custom agent entry. The adapter still reads `CURSOR_ACP_DEFAULT_MODE` and `CURSOR_ACP_DEFAULT_MODEL` as fallback values when the client does not send defaults.
+Prefer ACP client defaults, such as Zed’s inline `default_mode`, `default_model`, `default_fast`, and `default_thinking` fields on the custom agent entry. The adapter still reads `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING` as fallback values when the client does not send defaults.
 
 ### Legacy Yolo mode name aliases removed
 
@@ -165,9 +166,9 @@ If `cursor-acp` is not on your PATH, use the full absolute path to the entry poi
 }
 ```
 
-#### Default mode and model
+#### Default mode, model, fast, and thinking
 
-Zed can pass the initial mode and model through the ACP `session/new` request. Put them directly on the custom agent entry:
+Zed can pass the initial mode, model, fast flag, and thinking level through the ACP `session/new` request. Put them directly on the custom agent entry:
 
 ```json
 {
@@ -177,7 +178,9 @@ Zed can pass the initial mode and model through the ACP `session/new` request. P
       "command": "cursor-acp",
       "args": [],
       "default_mode": "yolo",
-      "default_model": "gpt-5.4-mini-medium"
+      "default_model": "gpt-5.4-mini-medium",
+      "default_fast": "true",
+      "default_thinking": "high"
     }
   }
 }
@@ -185,10 +188,12 @@ Zed can pass the initial mode and model through the ACP `session/new` request. P
 
 - `default_mode` — one of `default`, `yolo`, `plan`, or `ask` (legacy alias: `acceptEdits` → `default`)
 - `default_model` — optional model ID forwarded from the ACP client when supported
+- `default_fast` — optional fast variant selection (`true` or `false`) when the selected model has a matching Cursor CLI fast variant
+- `default_thinking` — optional thinking/reasoning selection, for example `none`, `low`, `medium`, `high`, `xhigh`, `max`, `true`, or `false`, depending on the selected model variants
 
-Omit keys you do not need. There is no separate adapter-specific config file for these defaults anymore. As a fallback, `CURSOR_ACP_DEFAULT_MODE` and `CURSOR_ACP_DEFAULT_MODEL` can be set in the adapter process environment.
+Omit keys you do not need. There is no separate adapter-specific config file for these defaults anymore. As a fallback, `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING` can be set in the adapter process environment.
 
-The mode picker in Zed (and other ACP clients) lists **Default**, **Yolo**, **Ask**, and **Plan** — including **Yolo**, which is implemented only in this adapter (Cursor’s native session still uses its usual Agent/Plan/Ask wiring under the hood).
+The mode picker in Zed (and other ACP clients) lists **Default**, **Yolo**, **Ask**, and **Plan** — including **Yolo**, which is implemented only in this adapter (Cursor’s native session still uses its usual Agent/Plan/Ask wiring under the hood). Model-specific **Fast** and **Thinking** controls appear when the selected Cursor CLI model has compatible variants.
 
 ### Using in Zed
 

@@ -95,6 +95,14 @@ function firstHeading(markdown: string): string | undefined {
 	return heading.length > 0 ? heading : undefined;
 }
 
+function cleanMetadataValue(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	if (!trimmed || trimmed === "''" || trimmed === '""') {
+		return undefined;
+	}
+	return trimmed.replace(/^['"](.+)['"]$/, "$1").trim() || undefined;
+}
+
 async function readSkill(filePath: string, origin: SkillOrigin): Promise<CustomSkill | null> {
 	const raw = await fs.readFile(filePath, "utf8");
 	const { metadata, body } = parseFrontmatter(raw);
@@ -105,13 +113,13 @@ async function readSkill(filePath: string, origin: SkillOrigin): Promise<CustomS
 
 	const heading = firstHeading(body);
 	const dirName = path.basename(path.dirname(filePath)).trim();
-	const name = metadata.name?.trim() || heading || dirName;
+	const name = cleanMetadataValue(metadata.name) || heading || dirName;
 	if (!name) {
 		return null;
 	}
 
 	const description =
-		metadata.description?.trim() ||
+		cleanMetadataValue(metadata.description) ||
 		(heading && heading !== name ? heading : undefined) ||
 		`Skill from ${dirName || path.basename(filePath)}`;
 
@@ -130,7 +138,9 @@ export async function loadCustomSkills(
 ): Promise<CustomSkill[]> {
 	const skillRoots: Array<{ root: string; origin: SkillOrigin }> = [
 		{ root: path.join(workspace, ".cursor", "skills"), origin: "workspace" },
+		{ root: path.join(workspace, ".agents", "skills"), origin: "workspace" },
 		{ root: path.join(homeDirectory, ".agents", "skills"), origin: "user" },
+		{ root: path.join(homeDirectory, ".cursor", "skills"), origin: "user" },
 		{
 			root: path.join(homeDirectory, ".cursor", "skills-cursor"),
 			origin: "cursor",
@@ -141,7 +151,12 @@ export async function loadCustomSkills(
 	for (const { root, origin } of skillRoots) {
 		const files = await collectSkillFiles(root);
 		for (const file of files) {
-			const skill = await readSkill(file, origin);
+			let skill: CustomSkill | null;
+			try {
+				skill = await readSkill(file, origin);
+			} catch {
+				continue;
+			}
 			if (!skill) {
 				continue;
 			}

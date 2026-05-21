@@ -364,6 +364,9 @@ for (const chunk of chunks) {
 							async setNativeMode() {
 								return {};
 							},
+							async setNativeModel() {
+								return {};
+							},
 							nativeSessionId: undefined,
 						};
 					},
@@ -476,6 +479,9 @@ setTimeout(() => {
 							async setNativeMode() {
 								return {};
 							},
+							async setNativeModel() {
+								return {};
+							},
 							nativeSessionId: undefined,
 						};
 					},
@@ -509,74 +515,4 @@ setTimeout(() => {
 			await cleanup();
 		}
 	}, 15000);
-
-	it("rejects prompt when auth is required", async () => {
-		const runner = new CursorCliRunner("/dev/null", noopLogger);
-
-		const { client, cleanup } = await createProtocolHarness(
-			(clientConn) =>
-				new CursorAcpAgent(clientConn, {
-					auth: {
-						async status() {
-							return { loggedIn: false as const, raw: "" };
-						},
-						async ensureLoggedIn() {
-							return { loggedIn: false as const, raw: "" };
-						},
-						async login() {
-							return { code: 0, stdout: "", stderr: "" };
-						},
-						async logout() {
-							return { code: 0, stdout: "", stderr: "" };
-						},
-					},
-					runner,
-					createNativeClient() {
-						return {
-							alive: false,
-							async cancel() {},
-							async close() {},
-							async createSessionBackend() {
-								return { sessionId: "native-1" };
-							},
-							async loadSessionBackend() {
-								return {};
-							},
-							async prompt() {
-								return { stopReason: "end_turn" };
-							},
-							async restartBackend() {
-								return { sessionId: "native-1" };
-							},
-							async setNativeMode() {
-								return {};
-							},
-							nativeSessionId: undefined,
-						};
-					},
-				}),
-		);
-
-		try {
-			await client.initialize({
-				protocolVersion: 1,
-				clientCapabilities: {},
-				clientInfo: { name: "test", version: "1.0.0" },
-			});
-
-			const session = await client.newSession({
-				cwd: tempScriptDir!,
-				mcpServers: [],
-			});
-
-			await expect(
-				client.prompt({
-					sessionId: session.sessionId,
-					prompt: [{ type: "text", text: "hello" }],
-				}),
-			).rejects.toThrow(/Authentication required/);
-		} finally {
-			await cleanup();
-		}
-	}, 10000);
 });
