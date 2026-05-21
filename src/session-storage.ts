@@ -30,6 +30,8 @@ export interface SessionMetaEntry {
 	backendSessionId?: string;
 	modeId?: SessionModeId;
 	thinkingLevel?: string;
+	thoughtParamId?: string;
+	fastValue?: string;
 }
 
 interface SessionListEntry {
@@ -92,6 +94,8 @@ export async function recordSessionMeta(
 		backendSessionId?: string;
 		modeId?: SessionModeId;
 		thinkingLevel?: string;
+		thoughtParamId?: string;
+		fastValue?: string;
 	},
 ): Promise<void> {
 	const entry: SessionMetaEntry = {
@@ -102,6 +106,8 @@ export async function recordSessionMeta(
 		backendSessionId: meta.backendSessionId,
 		modeId: meta.modeId,
 		thinkingLevel: meta.thinkingLevel,
+		thoughtParamId: meta.thoughtParamId,
+		fastValue: meta.fastValue,
 	};
 	await ensureSessionDir(cwd);
 	const filePath = sessionFilePath(cwd, sessionId);
@@ -116,6 +122,8 @@ export async function readSessionMeta(filePath: string): Promise<{
 	backendSessionId?: string;
 	modeId?: SessionModeId;
 	thinkingLevel?: string;
+	thoughtParamId?: string;
+	fastValue?: string;
 }> {
 	try {
 		const content = await fs.promises.readFile(filePath, "utf-8");
@@ -123,6 +131,8 @@ export async function readSessionMeta(filePath: string): Promise<{
 		let lastBackend: string | undefined;
 		let lastModeId: SessionModeId | undefined;
 		let lastThinkingLevel: string | undefined;
+		let lastThoughtParamId: string | undefined;
+		let lastFastValue: string | undefined;
 		for (const line of lines) {
 			try {
 				const entry = JSON.parse(line) as {
@@ -130,6 +140,8 @@ export async function readSessionMeta(filePath: string): Promise<{
 					backendSessionId?: string;
 					modeId?: string;
 					thinkingLevel?: string;
+					thoughtParamId?: string;
+					fastValue?: string;
 				};
 				if (entry.type !== "session_meta") {
 					continue;
@@ -143,8 +155,20 @@ export async function readSessionMeta(filePath: string): Promise<{
 						lastModeId = normalizedModeId;
 					}
 				}
-				if (typeof entry.thinkingLevel === "string" && entry.thinkingLevel.trim().length > 0) {
+				if (
+					typeof entry.thinkingLevel === "string" &&
+					entry.thinkingLevel.trim().length > 0
+				) {
 					lastThinkingLevel = entry.thinkingLevel.trim();
+				}
+				if (
+					typeof entry.thoughtParamId === "string" &&
+					entry.thoughtParamId.trim().length > 0
+				) {
+					lastThoughtParamId = entry.thoughtParamId.trim();
+				}
+				if (typeof entry.fastValue === "string" && entry.fastValue.trim().length > 0) {
+					lastFastValue = entry.fastValue.trim();
 				}
 			} catch {
 				continue;
@@ -154,6 +178,8 @@ export async function readSessionMeta(filePath: string): Promise<{
 			backendSessionId: lastBackend,
 			modeId: lastModeId,
 			thinkingLevel: lastThinkingLevel,
+			thoughtParamId: lastThoughtParamId,
+			fastValue: lastFastValue,
 		};
 	} catch {
 		// file not readable

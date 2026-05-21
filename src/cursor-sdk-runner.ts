@@ -133,6 +133,8 @@ export class CursorSdkRunner implements CursorRunner {
 					options.modelId,
 					options.thinkingLevel,
 					options.modelCatalog,
+					options.thoughtParamId,
+					options.fastValue,
 				);
 			}
 			if (options.modeId === "plan") {
@@ -229,6 +231,8 @@ export class CursorSdkRunner implements CursorRunner {
 									options.modelId,
 									options.thinkingLevel,
 									options.modelCatalog,
+									options.thoughtParamId,
+									options.fastValue,
 								),
 							}
 						: {}),
@@ -244,6 +248,8 @@ export class CursorSdkRunner implements CursorRunner {
 				options.modelId ?? "auto",
 				options.thinkingLevel,
 				options.modelCatalog,
+				options.thoughtParamId,
+				options.fastValue,
 			),
 			local: { cwd: options.workspace },
 		});

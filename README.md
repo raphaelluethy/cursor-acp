@@ -4,7 +4,9 @@
 
 Disclaimer: I am not affiliated with Cursor or Zed. This project is a personal experiment and should not be considered an official product of either company. I am a big fan of both products and wanted to combine what I like with both of them: An amazing editor and a great AI coding agent (and composer-1, holy this model flies xD).
 
-An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) adapter for [Cursor](https://cursor.com), enabling Cursor's AI coding assistant to be used within [Zed](https://zed.dev) and other ACP-compatible clients. Prompt execution uses [`@cursor/sdk`](https://www.npmjs.com/package/@cursor/sdk) and requires `CURSOR_API_KEY`.
+An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) adapter for [Cursor](https://cursor.com), enabling Cursor's AI coding assistant to be used within [Zed](https://zed.dev) and other ACP-compatible clients. **Version 1.0.0** uses [`@cursor/sdk`](https://www.npmjs.com/package/@cursor/sdk) exclusively and requires `CURSOR_API_KEY`.
+
+> **Upgrading from 0.x?** The 1.0.0 release removes all `cursor-agent` CLI integration. See the [migration guide](docs/breaking-changes.md) and [CHANGELOG](CHANGELOG.md) before upgrading.
 
 ## About
 
@@ -30,7 +32,7 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - **Session listing**: Lists past local sessions with optional cwd filtering and pagination
 - **Model listing and best-effort model selection**: Keeps `/model` support through SDK model APIs
 - **Thought level selection**: Exposes reasoning/thinking effort as an ACP config option (category `thought_level`) when the selected model supports SDK `reasoning`, `effort`, or `thinking` parameters. The config option id matches the SDK parameter id; defaults are resolved from the model's variant metadata
-- **Fast model variants**: Composer and other models expose fast variants as separate SDK model ids (e.g. `composer-2-fast`); select them directly in the model picker or via `/model`
+- **Fast model parameter**: Exposes SDK `fast` model parameters as a dynamic ACP config option when the selected model supports them; defaults are resolved from the model's variant metadata
 - **Authentication helpers**: `/login`, `/logout`, `/status` describe or verify SDK API-key authentication
 - **Prompt flattening for ACP clients**: Keeps embedded context and image prompts working by converting them to text before forwarding to the SDK
 - **Optional Yolo mode** (`yolo`): retries rejected tool calls with forced local execution when explicitly approved
@@ -41,9 +43,9 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - Resuming after restarting `cursor-acp` replays local JSONL so visible history is preserved and resumes SDK agents when possible
 - `debug` mode is intentionally not exposed in this phase
 
-## Breaking changes (SDK-only backend & Yolo)
+## Breaking changes in 1.0.0 (SDK-only backend & Yolo)
 
-The current release removes all Cursor command subprocess integration. Prompt execution, model listing, and authentication now use `@cursor/sdk` only.
+**1.0.0** removes all Cursor command subprocess integration. Prompt execution, model listing, and authentication use `@cursor/sdk` only. Full upgrade steps, before/after tables, and troubleshooting are in [`docs/breaking-changes.md`](docs/breaking-changes.md).
 
 ### Configuration defaults
 
@@ -72,14 +74,14 @@ Older builds accepted `bypassPermissions` and `autoRunAllCommands` as synonyms f
 - **Legacy alias**: `ask` still maps to **`default`** in `default_mode`, `/mode`, and stored session metadata so older configs keep working.
 - **Why it was removed**: `@cursor/sdk` does not expose Ask mode, and the separate Ask path added complexity without a stable long-term API to target.
 
-### Legacy model id syntax removed
+### Model parameter selection
 
-- **What changed**: Model ids are SDK ids only. Bracket syntax such as `composer-2[fast=true]` or `default[fast=true]` is no longer accepted.
-- **Fast variants**: Use the SDK model id directly (for example `composer-2-fast`).
+- **What changed**: Model ids are SDK ids only; SDK model parameters are exposed as separate config options where supported.
+- **Fast selection**: Fast mode uses the SDK `fast` parameter exposed by `Cursor.models.list()`.
 - **Auto model**: The SDK `default` model id is mapped to **`auto`** in the adapter; configure `default_model` with either id.
 - **Thought level config**: The ACP config option id is the SDK parameter id (`reasoning`, `effort`, or `thinking`), not a hardcoded `thinking` id.
 
-The same notices are linked from [`docs/breaking-changes.md`](docs/breaking-changes.md).
+See also [`CHANGELOG.md`](CHANGELOG.md) for the complete 1.0.0 release notes.
 
 ## Slash Commands
 
@@ -197,12 +199,12 @@ Zed (and other ACP clients) can pass the initial mode, model, and optional think
 ```
 
 - `default_mode` — one of `default`, `yolo`, or `plan` (legacy aliases: `acceptEdits` → `default`, `ask` → `default`)
-- `default_model` — optional model ID (use `composer-2-fast` or similar for fast variants of composer models; the legacy `composer-2[fast=true]` form is normalized automatically)
+- `default_model` — optional SDK model ID, for example `composer-2` or `gpt-5.5`
 - `default_thinking` (or `default_thinking_level`, `thinking`) — optional thinking/reasoning level for models that expose `reasoning` / `effort` / `thinking` parameters
 
 Omit keys you do not need. There is no separate adapter-specific config file for these defaults anymore. As a fallback, `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING` can be set in the adapter process environment.
 
-The mode picker in Zed (and other ACP clients) lists **Default**, **Yolo**, and **Plan**. Thinking level (when applicable) and model pickers appear as dynamic config options in the session.
+The mode picker in Zed (and other ACP clients) lists **Default**, **Yolo**, and **Plan**. Model, fast mode (when supported), and thinking level (when applicable) appear as dynamic config options in the session.
 
 ### Using in Zed
 
@@ -253,8 +255,10 @@ bun run check       # Run lint and format checks
 
 ## Migration Notes
 
-- See **Breaking changes (SDK-only backend & Yolo)**, **Ask mode removed**, and **Legacy model id syntax removed** for semantic and protocol differences when upgrading from older builds.
-- Model ids must match the Cursor SDK catalog (for example `composer-2-fast`, not `composer-2[fast=true]`)
+Start with [`docs/breaking-changes.md`](docs/breaking-changes.md) for the 1.0.0 upgrade checklist. Summary:
+
+- See **Breaking changes in 1.0.0**, **Ask mode removed**, and **Model parameter selection** for semantic and protocol differences when upgrading from 0.x.
+- Model ids must match the Cursor SDK catalog; fast mode is configured through the SDK `fast` parameter
 - Thought level config options use SDK parameter ids (`reasoning`, `effort`, or `thinking`), not a fixed `thinking` config id
 - `default`, `yolo`, and `plan` are the advertised modes
 - `acceptEdits` is a deprecated alias for `default` (still accepted). `ask` is a deprecated alias for `default`. For Yolo, use **`yolo`**—`bypassPermissions` and `autoRunAllCommands` are no longer accepted (see **Legacy Yolo mode name aliases removed**)

@@ -42,13 +42,20 @@ import { CachedToolUse, mapCursorEventToAcp, RejectedToolCall } from "./cursor-e
 import type { CursorRunner } from "./cursor-runner.js";
 import { createCursorRunner } from "./cursor-runner-provider.js";
 import {
+	FAST_PARAM_ID,
 	ensureAutoModel,
-	findModelInCatalog,
-	getThinkingParameter,
-	isValidThinkingLevel,
+	formatFastParameterOptionName,
+	getFastParameter,
+	getThoughtLevelParameter,
+	isThoughtLevelParamId,
+	isValidFastValue,
+	isValidThoughtLevel,
 	normalizeModelId,
+	resolveFastParameterModel,
+	resolveFastValue,
 	resolveModelId,
-	resolveThinkingLevel,
+	resolveParameterModel,
+	resolveThoughtLevel,
 } from "./model-id.js";
 import { parseLeadingSlashCommand, promptToCursorText } from "./prompt-conversion.js";
 import {
@@ -134,6 +141,20 @@ function modeCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
 		raw._meta?.default_mode,
 		raw._meta?.defaultConfigOptions?.mode,
 		raw._meta?.default_config_options?.mode,
+		raw.cursor?.modeId,
+		raw.cursor?.mode_id,
+		raw.cursor?.mode,
+		raw.cursor?.defaultModeId,
+		raw.cursor?.default_mode,
+		raw.cursor?.defaultConfigOptions?.mode,
+		raw.cursor?.default_config_options?.mode,
+		raw._meta?.cursor?.modeId,
+		raw._meta?.cursor?.mode_id,
+		raw._meta?.cursor?.mode,
+		raw._meta?.cursor?.defaultModeId,
+		raw._meta?.cursor?.default_mode,
+		raw._meta?.cursor?.defaultConfigOptions?.mode,
+		raw._meta?.cursor?.default_config_options?.mode,
 	];
 }
 
@@ -153,6 +174,20 @@ function modelCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
 		raw._meta?.default_model,
 		raw._meta?.defaultConfigOptions?.model,
 		raw._meta?.default_config_options?.model,
+		raw.cursor?.modelId,
+		raw.cursor?.model_id,
+		raw.cursor?.model,
+		raw.cursor?.defaultModelId,
+		raw.cursor?.default_model,
+		raw.cursor?.defaultConfigOptions?.model,
+		raw.cursor?.default_config_options?.model,
+		raw._meta?.cursor?.modelId,
+		raw._meta?.cursor?.model_id,
+		raw._meta?.cursor?.model,
+		raw._meta?.cursor?.defaultModelId,
+		raw._meta?.cursor?.default_model,
+		raw._meta?.cursor?.defaultConfigOptions?.model,
+		raw._meta?.cursor?.default_config_options?.model,
 	];
 }
 
@@ -189,6 +224,65 @@ function thinkingCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
 		raw._meta?.default_thinking,
 		raw._meta?.defaultConfigOptions?.thinking,
 		raw._meta?.default_config_options?.thinking,
+		raw.cursor?.thinkingLevel,
+		raw.cursor?.thinking_level,
+		raw.cursor?.thinking,
+		raw.cursor?.defaultThinkingLevel,
+		raw.cursor?.default_thinking_level,
+		raw.cursor?.defaultThinking,
+		raw.cursor?.default_thinking,
+		raw.cursor?.defaultConfigOptions?.thinking,
+		raw.cursor?.default_config_options?.thinking,
+		raw._meta?.cursor?.thinkingLevel,
+		raw._meta?.cursor?.thinking_level,
+		raw._meta?.cursor?.thinking,
+		raw._meta?.cursor?.defaultThinkingLevel,
+		raw._meta?.cursor?.default_thinking_level,
+		raw._meta?.cursor?.defaultThinking,
+		raw._meta?.cursor?.default_thinking,
+		raw._meta?.cursor?.defaultConfigOptions?.thinking,
+		raw._meta?.cursor?.default_config_options?.thinking,
+	];
+}
+
+function pickFastValue(...candidates: unknown[]): string | undefined {
+	for (const candidate of candidates) {
+		if (typeof candidate === "boolean") {
+			return String(candidate);
+		}
+		if (typeof candidate !== "string") {
+			continue;
+		}
+		const trimmed = candidate.trim();
+		if (trimmed.length > 0) {
+			return trimmed;
+		}
+	}
+	return undefined;
+}
+
+function fastCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
+	return [
+		raw.fast,
+		raw.defaultFast,
+		raw.default_fast,
+		raw.defaultConfigOptions?.fast,
+		raw.default_config_options?.fast,
+		raw._meta?.fast,
+		raw._meta?.defaultFast,
+		raw._meta?.default_fast,
+		raw._meta?.defaultConfigOptions?.fast,
+		raw._meta?.default_config_options?.fast,
+		raw.cursor?.fast,
+		raw.cursor?.defaultFast,
+		raw.cursor?.default_fast,
+		raw.cursor?.defaultConfigOptions?.fast,
+		raw.cursor?.default_config_options?.fast,
+		raw._meta?.cursor?.fast,
+		raw._meta?.cursor?.defaultFast,
+		raw._meta?.cursor?.default_fast,
+		raw._meta?.cursor?.defaultConfigOptions?.fast,
+		raw._meta?.cursor?.default_config_options?.fast,
 	];
 }
 
@@ -210,6 +304,10 @@ export interface SessionState {
 	configuredModelId?: string;
 	thinkingLevel?: string;
 	configuredThinkingLevel?: string;
+	thoughtParamId?: string;
+	configuredThoughtParamId?: string;
+	fastValue?: string;
+	configuredFastValue?: string;
 	lastAgentModeId: "default" | "yolo";
 	cancelled: boolean;
 	activeRun?: ActiveRunState;
@@ -232,6 +330,7 @@ export class CursorAcpAgent implements Agent {
 	private defaultModeId?: SessionModeId;
 	private defaultModelId?: string;
 	private defaultThinkingLevel?: string;
+	private defaultFastValue?: string;
 
 	private readonly runner: CursorRunner;
 	private readonly auth: CursorAuthClient;
@@ -253,6 +352,7 @@ export class CursorAcpAgent implements Agent {
 		this.defaultModeId = initDefaults.modeId ?? getEnvDefaultMode();
 		this.defaultModelId = initDefaults.modelId ?? getEnvDefaultModel();
 		this.defaultThinkingLevel = initDefaults.thinkingLevel ?? getEnvDefaultThinking();
+		this.defaultFastValue = initDefaults.fastValue;
 
 		const authMethod: NonNullable<InitializeResponse["authMethods"]>[number] = {
 			id: "cursor_login",
@@ -300,6 +400,7 @@ export class CursorAcpAgent implements Agent {
 			mcpServers: params.mcpServers,
 			preferredModeId: this.extractRequestedInitialMode(params),
 			preferredModelId: this.extractRequestedInitialModel(params),
+			preferredFastValue: this.extractRequestedInitialFast(params),
 		});
 	}
 
@@ -320,6 +421,8 @@ export class CursorAcpAgent implements Agent {
 			mcpServers: params.mcpServers,
 			preferredModeId: meta.modeId,
 			preferredThinkingLevel: meta.thinkingLevel,
+			preferredThoughtParamId: meta.thoughtParamId,
+			preferredFastValue: meta.fastValue,
 		});
 
 		const session = this.requireSession(params.sessionId);
@@ -413,6 +516,8 @@ export class CursorAcpAgent implements Agent {
 			mcpServers: params.mcpServers,
 			preferredModeId: meta.modeId,
 			preferredThinkingLevel: meta.thinkingLevel,
+			preferredThoughtParamId: meta.thoughtParamId,
+			preferredFastValue: meta.fastValue,
 		});
 
 		const session = this.requireSession(params.sessionId);
@@ -464,8 +569,9 @@ export class CursorAcpAgent implements Agent {
 				onModelChanged: async (modelId) => {
 					session.modelId = modelId;
 					session.configuredModelId = modelId;
-					this.syncThinkingLevelForModel(session);
+					this.syncParametersForModel(session);
 					await this.persistSessionMeta(session);
+					await this.emitConfigOptionsUpdate(session);
 				},
 			});
 
@@ -566,8 +672,9 @@ export class CursorAcpAgent implements Agent {
 
 		session.modelId = normalizeModelId(params.modelId);
 		session.configuredModelId = session.modelId;
-		this.syncThinkingLevelForModel(session);
+		this.syncParametersForModel(session);
 		await this.persistSessionMeta(session);
+		await this.emitConfigOptionsUpdate(session);
 		return {};
 	}
 
@@ -587,7 +694,9 @@ export class CursorAcpAgent implements Agent {
 				throw RequestError.invalidParams(`Invalid mode: ${params.value}`);
 			}
 			await this.applySessionMode(session, modeId);
-			return { configOptions: this.buildConfigOptions(session) };
+			const configOptions = this.buildConfigOptions(session);
+			await this.emitConfigOptionsUpdate(session, configOptions);
+			return { configOptions };
 		}
 
 		if (params.configId === "model") {
@@ -596,29 +705,58 @@ export class CursorAcpAgent implements Agent {
 			}
 			session.modelId = normalizeModelId(params.value);
 			session.configuredModelId = session.modelId;
-			this.syncThinkingLevelForModel(session);
+			this.syncParametersForModel(session);
 			await this.persistSessionMeta(session);
-			return { configOptions: this.buildConfigOptions(session) };
+			const configOptions = this.buildConfigOptions(session);
+			await this.emitConfigOptionsUpdate(session, configOptions);
+			return { configOptions };
 		}
 
-		if (params.configId === "thinking") {
+		if (params.configId === FAST_PARAM_ID) {
 			if (session.activeRun) {
-				throw RequestError.invalidParams("Cannot change thinking level during an active prompt");
+				throw RequestError.invalidParams("Cannot change fast mode during an active prompt");
 			}
-			const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
-			const thinkingParameter = getThinkingParameter(currentModel);
-			if (!thinkingParameter) {
+			const parameterModel = resolveFastParameterModel(session.modelCatalog, session.modelId);
+			if (!getFastParameter(parameterModel)) {
+				throw RequestError.invalidParams(
+					"Fast mode is not supported for the current model",
+				);
+			}
+			if (!isValidFastValue(parameterModel, params.value)) {
+				throw RequestError.invalidParams(`Invalid fast mode: ${params.value}`);
+			}
+			session.fastValue = params.value;
+			session.configuredFastValue = params.value;
+			await this.persistSessionMeta(session);
+			const configOptions = this.buildConfigOptions(session);
+			await this.emitConfigOptionsUpdate(session, configOptions);
+			return { configOptions };
+		}
+
+		if (isThoughtLevelParamId(params.configId)) {
+			if (session.activeRun) {
+				throw RequestError.invalidParams(
+					"Cannot change thinking level during an active prompt",
+				);
+			}
+			const parameterModel = resolveParameterModel(session.modelCatalog, session.modelId);
+			const thoughtParameter = getThoughtLevelParameter(parameterModel);
+			if (!thoughtParameter || thoughtParameter.id !== params.configId) {
 				throw RequestError.invalidParams(
 					"Thinking level is not supported for the current model",
 				);
 			}
-			if (!isValidThinkingLevel(currentModel, params.value)) {
+			if (!isValidThoughtLevel(parameterModel, params.configId, params.value)) {
 				throw RequestError.invalidParams(`Invalid thinking level: ${params.value}`);
 			}
+			session.thoughtParamId = params.configId;
+			session.configuredThoughtParamId = params.configId;
 			session.thinkingLevel = params.value;
 			session.configuredThinkingLevel = params.value;
 			await this.persistSessionMeta(session);
-			return { configOptions: this.buildConfigOptions(session) };
+			const configOptions = this.buildConfigOptions(session);
+			await this.emitConfigOptionsUpdate(session, configOptions);
+			return { configOptions };
 		}
 
 		throw RequestError.invalidParams(`Unknown config option: ${params.configId}`);
@@ -664,10 +802,13 @@ export class CursorAcpAgent implements Agent {
 		preferredModeId?: SessionModeId;
 		preferredModelId?: string;
 		preferredThinkingLevel?: string;
+		preferredThoughtParamId?: string;
+		preferredFastValue?: string;
 	}): Promise<NewSessionResponse> {
 		const modeId = params.preferredModeId ?? this.defaultModeId ?? DEFAULT_MODE_ID;
 		const configuredModelId = params.preferredModelId ?? this.defaultModelId;
 		const configuredThinkingLevel = params.preferredThinkingLevel ?? this.defaultThinkingLevel;
+		const configuredFastValue = params.preferredFastValue ?? this.defaultFastValue;
 		const session: SessionState = {
 			sessionId: params.sessionId,
 			cwd: params.cwd,
@@ -676,6 +817,8 @@ export class CursorAcpAgent implements Agent {
 			modelId: configuredModelId,
 			configuredModelId,
 			configuredThinkingLevel,
+			configuredThoughtParamId: params.preferredThoughtParamId,
+			configuredFastValue,
 			lastAgentModeId: modeId === "yolo" ? "yolo" : "default",
 			cancelled: false,
 			availableCommands: [],
@@ -707,10 +850,15 @@ export class CursorAcpAgent implements Agent {
 		return pickNormalizedModelId(...modelCandidatesFrom(looseSessionDefaults(params)));
 	}
 
+	private extractRequestedInitialFast(params: NewSessionRequest): string | undefined {
+		return pickFastValue(...fastCandidatesFrom(looseSessionDefaults(params)));
+	}
+
 	private extractInitializeDefaults(request: InitializeRequest): {
 		modeId?: SessionModeId;
 		modelId?: string;
 		thinkingLevel?: string;
+		fastValue?: string;
 	} {
 		const raw = request as ExtendedInitializeRequest;
 
@@ -726,6 +874,10 @@ export class CursorAcpAgent implements Agent {
 			thinkingLevel: pickThinkingLevel(
 				...thinkingCandidatesFrom(raw),
 				...thinkingCandidatesFrom(raw.clientCapabilities?._meta ?? {}),
+			),
+			fastValue: pickFastValue(
+				...fastCandidatesFrom(raw),
+				...fastCandidatesFrom(raw.clientCapabilities?._meta ?? {}),
 			),
 		};
 	}
@@ -813,7 +965,7 @@ export class CursorAcpAgent implements Agent {
 			session.modelId = listed.find((model) => model.current)?.modelId ?? listed[0]?.modelId;
 		}
 
-		this.syncThinkingLevelForModel(session);
+		this.syncParametersForModel(session);
 
 		const models = {
 			availableModels,
@@ -844,6 +996,40 @@ export class CursorAcpAgent implements Agent {
 			},
 		];
 
+		const parameterModel = resolveParameterModel(session.modelCatalog, session.modelId);
+		const thoughtParameter = getThoughtLevelParameter(parameterModel);
+		if (thoughtParameter && session.thinkingLevel) {
+			configOptions.push({
+				id: thoughtParameter.id,
+				name: thoughtParameter.displayName ?? "Thinking",
+				description: "Reasoning effort for the selected model",
+				category: "thought_level",
+				type: "select",
+				currentValue: session.thinkingLevel,
+				options: thoughtParameter.values.map((value) => ({
+					value: value.value,
+					name: value.displayName ?? value.value,
+				})),
+			});
+		}
+
+		const fastParameterModel = resolveFastParameterModel(session.modelCatalog, session.modelId);
+		const fastParameter = getFastParameter(fastParameterModel);
+		if (fastParameter && session.fastValue) {
+			configOptions.push({
+				id: FAST_PARAM_ID,
+				name: fastParameter.displayName ?? "Fast",
+				description: "Fast response variant for the selected model",
+				category: "model",
+				type: "select",
+				currentValue: session.fastValue,
+				options: fastParameter.values.map((value) => ({
+					value: value.value,
+					name: formatFastParameterOptionName(value.value, value.displayName),
+				})),
+			});
+		}
+
 		const effectiveModels = models ?? session.models;
 		if (effectiveModels) {
 			configOptions.push({
@@ -861,41 +1047,55 @@ export class CursorAcpAgent implements Agent {
 			});
 		}
 
-		const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
-		const thinkingParameter = getThinkingParameter(currentModel);
-		if (thinkingParameter && session.thinkingLevel) {
-			configOptions.push({
-				id: "thinking",
-				name: thinkingParameter.displayName ?? "Thinking",
-				description: "Reasoning effort for the selected model",
-				category: "thought_level",
-				type: "select",
-				currentValue: session.thinkingLevel,
-				options: thinkingParameter.values.map((value) => ({
-					value: value.value,
-					name: value.displayName ?? value.value,
-				})),
-			});
-		}
-
 		return configOptions;
 	}
 
+	private syncParametersForModel(session: SessionState): void {
+		this.syncThinkingLevelForModel(session);
+		this.syncFastValueForModel(session);
+	}
+
 	private syncThinkingLevelForModel(session: SessionState): void {
-		const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
-		const thinkingParameter = getThinkingParameter(currentModel);
-		if (!thinkingParameter) {
+		const parameterModel = resolveParameterModel(session.modelCatalog, session.modelId);
+		const thoughtParameter = getThoughtLevelParameter(parameterModel);
+		if (!thoughtParameter) {
+			session.thoughtParamId = undefined;
 			session.thinkingLevel = undefined;
 			return;
 		}
 
-		const resolved = resolveThinkingLevel(currentModel, session.configuredThinkingLevel);
+		session.thoughtParamId = thoughtParameter.id;
+
+		const configuredValue =
+			session.configuredThoughtParamId === thoughtParameter.id
+				? session.configuredThinkingLevel
+				: undefined;
+		const resolved = resolveThoughtLevel(parameterModel, thoughtParameter.id, configuredValue);
 		session.thinkingLevel = resolved;
-		if (
-			session.configuredThinkingLevel &&
-			!isValidThinkingLevel(currentModel, session.configuredThinkingLevel)
-		) {
+		if (configuredValue && resolved !== configuredValue) {
 			session.configuredThinkingLevel = resolved;
+			session.configuredThoughtParamId = thoughtParameter.id;
+		}
+		if (
+			session.configuredThoughtParamId &&
+			session.configuredThoughtParamId !== thoughtParameter.id
+		) {
+			session.configuredThoughtParamId = thoughtParameter.id;
+			session.configuredThinkingLevel = resolved;
+		}
+	}
+
+	private syncFastValueForModel(session: SessionState): void {
+		const parameterModel = resolveFastParameterModel(session.modelCatalog, session.modelId);
+		if (!getFastParameter(parameterModel)) {
+			session.fastValue = undefined;
+			return;
+		}
+
+		const resolved = resolveFastValue(parameterModel, session.configuredFastValue);
+		session.fastValue = resolved;
+		if (session.configuredFastValue && resolved !== session.configuredFastValue) {
+			session.configuredFastValue = resolved;
 		}
 	}
 
@@ -965,6 +1165,8 @@ export class CursorAcpAgent implements Agent {
 			modelId: session.modelId,
 			thinkingLevel: session.thinkingLevel,
 			modelCatalog: session.modelCatalog,
+			thoughtParamId: session.thoughtParamId,
+			fastValue: session.fastValue,
 			modeId: modeSettings.modeId,
 			force: modeSettings.force,
 			onEvent: async (event) => {
@@ -1139,6 +1341,19 @@ export class CursorAcpAgent implements Agent {
 		}
 	}
 
+	private async emitConfigOptionsUpdate(
+		session: SessionState,
+		configOptions = this.buildConfigOptions(session),
+	): Promise<void> {
+		await this.emitOrQueueNotification(session, {
+			sessionId: session.sessionId,
+			update: {
+				sessionUpdate: "config_option_update",
+				configOptions,
+			},
+		});
+	}
+
 	private async applySessionMode(session: SessionState, modeId: SessionModeId): Promise<void> {
 		this.setSessionModeState(session, modeId);
 		await this.persistSessionMeta(session);
@@ -1156,6 +1371,8 @@ export class CursorAcpAgent implements Agent {
 			backendSessionId: session.backendSessionId,
 			modeId: session.modeId,
 			thinkingLevel: session.configuredThinkingLevel ?? session.thinkingLevel,
+			thoughtParamId: session.configuredThoughtParamId ?? session.thoughtParamId,
+			fastValue: session.configuredFastValue ?? session.fastValue,
 		});
 	}
 

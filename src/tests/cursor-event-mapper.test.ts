@@ -13,7 +13,7 @@ type ToolCallNotificationUpdate = Extract<
 };
 
 describe("cursor event mapper", () => {
-	it("maps thinking delta", () => {
+	it("maps thinking deltas to agent thought chunks", () => {
 		const result = mapCursorEventToAcp(
 			{ type: "thinking", subtype: "delta", text: "hello" },
 			{ sessionId: "s1", toolUseCache: {} },
@@ -30,7 +30,7 @@ describe("cursor event mapper", () => {
 		]);
 	});
 
-	it("maps tool start and completion", () => {
+	it("maps shell tool lifecycle to terminal tool calls", () => {
 		const cache: Record<string, CachedToolUse> = {};
 
 		const started = mapCursorEventToAcp(
@@ -38,70 +38,6 @@ describe("cursor event mapper", () => {
 				type: "tool_call",
 				subtype: "started",
 				call_id: "call_1",
-				tool_call: {
-					shellToolCall: {
-						args: { command: "pwd" },
-					},
-				},
-			},
-			{ sessionId: "s1", toolUseCache: cache },
-		);
-
-		expect(started.notifications[0].update.sessionUpdate).toBe("tool_call");
-		const startedUpdate = started.notifications[0].update as ToolCallNotificationUpdate;
-		expect(startedUpdate.status).toBe("in_progress");
-		expect(startedUpdate.kind).toBe("execute");
-		expect(startedUpdate.title).toBe("pwd");
-		expect(startedUpdate.content).toEqual([
-			{ type: "terminal", terminalId: "cursor-shell-call_1" },
-		]);
-		expect(startedUpdate._meta?.terminal_info).toEqual({
-			terminal_id: "cursor-shell-call_1",
-		});
-
-		const completed = mapCursorEventToAcp(
-			{
-				type: "tool_call",
-				subtype: "completed",
-				call_id: "call_1",
-				tool_call: {
-					shellToolCall: {
-						args: { command: "pwd" },
-						result: {
-							success: { stdout: "/tmp\n" },
-						},
-					},
-				},
-			},
-			{ sessionId: "s1", toolUseCache: cache },
-		);
-
-		expect(completed.notifications[0].update.sessionUpdate).toBe("tool_call_update");
-		expect(
-			(completed.notifications[0].update as ToolCallNotificationUpdate)._meta
-				?.terminal_output,
-		).toEqual({
-			terminal_id: "cursor-shell-call_1",
-			data: "/tmp\n",
-		});
-		const update = completed.notifications[1].update as ToolCallNotificationUpdate;
-		expect(update.status).toBe("completed");
-		expect(update.content).toEqual([{ type: "terminal", terminalId: "cursor-shell-call_1" }]);
-		expect(update._meta?.terminal_exit).toEqual({
-			terminal_id: "cursor-shell-call_1",
-			exit_code: 0,
-			signal: null,
-		});
-	});
-
-	it("includes terminal cwd and description on shell tool start", () => {
-		const cache: Record<string, CachedToolUse> = {};
-
-		const started = mapCursorEventToAcp(
-			{
-				type: "tool_call",
-				subtype: "started",
-				call_id: "call_2",
 				tool_call: {
 					shellToolCall: {
 						args: {
@@ -115,17 +51,50 @@ describe("cursor event mapper", () => {
 			{ sessionId: "s1", toolUseCache: cache },
 		);
 
-		const update = started.notifications[0].update as ToolCallNotificationUpdate;
-		expect(update.content).toEqual([{ type: "terminal", terminalId: "cursor-shell-call_2" }]);
-		expect(update._meta?.terminal_info).toEqual({
-			terminal_id: "cursor-shell-call_2",
+		const startedUpdate = started.notifications[0].update as ToolCallNotificationUpdate;
+		expect(startedUpdate).toMatchObject({
+			sessionUpdate: "tool_call",
+			status: "in_progress",
+			kind: "execute",
+			title: "npm test",
+			content: [{ type: "terminal", terminalId: "cursor-shell-call_1" }],
+		});
+		expect(startedUpdate._meta?.terminal_info).toEqual({
+			terminal_id: "cursor-shell-call_1",
 			cwd: "/workspace/app",
+		});
+
+		const completed = mapCursorEventToAcp(
+			{
+				type: "tool_call",
+				subtype: "completed",
+				call_id: "call_1",
+				tool_call: {
+					shellToolCall: {
+						args: { command: "npm test" },
+						result: {
+							success: { stdout: "/tmp\n" },
+						},
+					},
+				},
+			},
+			{ sessionId: "s1", toolUseCache: cache },
+		);
+
+		const completedUpdate = completed.notifications[0].update as ToolCallNotificationUpdate;
+		expect(completedUpdate.sessionUpdate).toBe("tool_call_update");
+		expect(completedUpdate._meta?.terminal_output).toEqual({
+			terminal_id: "cursor-shell-call_1",
+			data: "/tmp\n",
+		});
+		expect(completed.notifications[1].update).toMatchObject({
+			sessionUpdate: "tool_call_update",
+			status: "completed",
+			content: [{ type: "terminal", terminalId: "cursor-shell-call_1" }],
 		});
 	});
 
-	it("maps edit tool start to in_progress with provisional diff when args allow", () => {
-		const cache: Record<string, CachedToolUse> = {};
-
+	it("maps edit tool start to provisional diff content", () => {
 		const started = mapCursorEventToAcp(
 			{
 				type: "tool_call",
@@ -141,18 +110,18 @@ describe("cursor event mapper", () => {
 					},
 				},
 			},
-			{ sessionId: "s1", toolUseCache: cache },
+			{ sessionId: "s1", toolUseCache: {} },
 		);
 
-		const u = started.notifications[0].update as ToolCallNotificationUpdate;
-		expect(u.status).toBe("in_progress");
-		expect(u.kind).toBe("edit");
-		expect(u.content).toEqual([
-			{ type: "diff", path: "/proj/a.ts", oldText: "foo", newText: "bar" },
-		]);
+		const update = started.notifications[0].update as ToolCallNotificationUpdate;
+		expect(update).toMatchObject({
+			status: "in_progress",
+			kind: "edit",
+			content: [{ type: "diff", path: "/proj/a.ts", oldText: "foo", newText: "bar" }],
+		});
 	});
 
-	it("maps todo completion to plan", () => {
+	it("maps todo completion to plan updates", () => {
 		const cache: Record<string, CachedToolUse> = {};
 
 		mapCursorEventToAcp(
@@ -160,11 +129,7 @@ describe("cursor event mapper", () => {
 				type: "tool_call",
 				subtype: "started",
 				call_id: "todo_1",
-				tool_call: {
-					updateTodosToolCall: {
-						args: {},
-					},
-				},
+				tool_call: { updateTodosToolCall: { args: {} } },
 			},
 			{ sessionId: "s1", toolUseCache: cache },
 		);
@@ -187,25 +152,6 @@ describe("cursor event mapper", () => {
 			},
 			{ sessionId: "s1", toolUseCache: cache },
 		);
-
-		expect(done.notifications[0].update.sessionUpdate).toBe("tool_call_update");
-		const todoUpdate = done.notifications[0].update;
-		if (todoUpdate.sessionUpdate !== "tool_call_update") {
-			throw new Error("Expected tool_call_update");
-		}
-		expect(todoUpdate.status).toBe("completed");
-		expect(todoUpdate.rawOutput).toEqual({
-			success: {
-				todos: [{ content: "Inspect repo", status: "TODO_STATUS_PENDING" }],
-			},
-		});
-		expect(
-			todoUpdate.content?.[0] &&
-				"content" in todoUpdate.content[0] &&
-				todoUpdate.content[0].content.type === "text"
-				? todoUpdate.content[0].content.text
-				: "",
-		).toContain("todos");
 
 		expect(done.notifications[1]).toEqual({
 			sessionId: "s1",

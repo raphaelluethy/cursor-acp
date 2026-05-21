@@ -1,10 +1,10 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Source lives in `src/`. Key modules include the outer ACP agent (`src/cursor-acp-agent.ts`), the native `agent acp` bridge (`src/cursor-native-acp-client.ts`), prompt runners (`src/cursor-sdk-runner.ts`, `src/cursor-runner-provider.ts`), SDK event adaptation (`src/cursor-sdk-event-adapter.ts`), and prompt conversion (`src/prompt-conversion.ts`). The adapter uses `@cursor/sdk` for prompt turns, keeps `cursor-agent acp` for session compatibility, and adds session persistence, history replay, model selection, and auto-approval of tool calls. Tests are in `src/tests/` and use the `.test.ts` naming pattern. Build output is emitted to `dist/` and should not be edited by hand. Documentation and notes live in `docs/`.
+Source lives in `src/`. Key modules include the outer ACP agent (`src/cursor-acp-agent.ts`), prompt runners (`src/cursor-sdk-runner.ts`, `src/cursor-runner-provider.ts`), SDK event adaptation (`src/cursor-sdk-event-adapter.ts`), prompt conversion (`src/prompt-conversion.ts`), model parameter handling (`src/model-id.ts`), session persistence (`src/session-storage.ts`), and slash commands (`src/slash-commands.ts`). The adapter uses `@cursor/sdk` exclusively for prompt execution, model listing, authentication, and agent resume, and adds local session persistence, history replay, model/parameter selection, and Yolo retry behavior. Tests are in `src/tests/` and use the `.test.ts` naming pattern. Build output is emitted to `dist/` and should not be edited by hand. Documentation and notes live in `docs/` (see `docs/breaking-changes.md` for the 1.0.0 migration guide).
 
 ## Build, Test, and Development Commands
-- `bun install`: install dependencies.
+- `bun install`: install dependencies (postinstall rebuilds `sqlite3` for `@cursor/sdk`).
 - `bun run build`: compile TypeScript to `dist/` via `tsc`.
 - `bun run start`: run the built CLI from `dist/index.js`.
 - `bun run dev`: build then start (handy for local iteration).
@@ -25,4 +25,4 @@ Use Vitest and place new tests in `src/tests/` with a `.test.ts` suffix. Prefer 
 Commit messages generally follow Conventional Commits: `type: summary` (examples: `feat: ...`, `docs: ...`, `chore: ...`, `test: ...`). Keep the subject short and imperative. PRs should include a clear description, linked issues if applicable, and explicit test steps. Add screenshots or logs for user-facing or CLI output changes, and update `README.md` when the usage surface changes.
 
 ## Configuration & Requirements
-Development expects Node.js 18+, Bun, and `CURSOR_API_KEY` for the Cursor SDK. Ensure authentication is configured before running `bun run start` or `bun run dev`.
+Development expects Bun on `PATH`, `CURSOR_API_KEY` for the Cursor SDK, and a valid Cursor subscription. Ensure authentication is configured before running `bun run start` or `bun run dev`. See `docs/breaking-changes.md` when changing behavior that affects upgrades from 0.x.

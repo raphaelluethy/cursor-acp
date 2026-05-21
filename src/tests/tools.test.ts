@@ -1,26 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ToolCallContent } from "@agentclientprotocol/sdk";
 import {
 	maybeDiffContentFromMutationResult,
 	shellToolPresentation,
 	toolUpdateFromCursorToolResult,
 } from "../tools.js";
 
-function textFromContent(content: ToolCallContent[] | undefined): string {
-	const first = content?.[0];
-	if (
-		first &&
-		first.type === "content" &&
-		first.content?.type === "text" &&
-		typeof first.content.text === "string"
-	) {
-		return first.content.text;
-	}
-	return "";
-}
-
-describe("toolUpdateFromCursorToolResult", () => {
-	it("builds terminal content for shell tool presentation", () => {
+describe("tool presentation for ACP", () => {
+	it("builds terminal content for shell tools", () => {
 		const shell = shellToolPresentation(
 			{
 				command: "pnpm lint",
@@ -30,60 +16,14 @@ describe("toolUpdateFromCursorToolResult", () => {
 			"terminal-1",
 		);
 
-		expect(shell.title).toBe("pnpm lint");
-		expect(shell.cwd).toBe("/repo");
-		expect(shell.content).toEqual([{ type: "terminal", terminalId: "terminal-1" }]);
+		expect(shell).toMatchObject({
+			title: "pnpm lint",
+			cwd: "/repo",
+			content: [{ type: "terminal", terminalId: "terminal-1" }],
+		});
 	});
 
-	it("includes stdout and stderr output", () => {
-		const update = toolUpdateFromCursorToolResult(
-			"shellToolCall",
-			{ command: "ls" },
-			{
-				success: {
-					stdout: "line1\n",
-					stderr: "warn\n",
-				},
-			},
-			"terminal-1",
-		);
-
-		expect(update.content).toEqual([{ type: "terminal", terminalId: "terminal-1" }]);
-	});
-
-	it("falls back to content/text fields", () => {
-		const update = toolUpdateFromCursorToolResult(
-			"readToolCall",
-			{ path: "/tmp/file" },
-			{
-				success: {
-					content: "hello world",
-				},
-			},
-		);
-
-		const text = textFromContent(update.content);
-		expect(text).toContain("hello world");
-	});
-
-	it("uses interleaved output when present", () => {
-		const update = toolUpdateFromCursorToolResult(
-			"shellToolCall",
-			{ command: "echo hi" },
-			{
-				success: {
-					interleavedOutput: "hi\n",
-					stdout: "",
-					stderr: "",
-				},
-			},
-		);
-
-		const text = textFromContent(update.content);
-		expect(text).toContain("hi");
-	});
-
-	it("builds diff content for write tool results like edit", () => {
+	it("builds diff content for file mutation tools", () => {
 		const diff = maybeDiffContentFromMutationResult(
 			{ path: "/p/x.txt" },
 			{

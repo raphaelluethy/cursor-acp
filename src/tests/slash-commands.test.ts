@@ -7,21 +7,10 @@ import {
 	handleSlashCommand,
 	loadCustomSlashCommands,
 	normalizeSlashCommandName,
-	parseModelListOutput,
 	resolveCustomSlashCommandPrompt,
 } from "../slash-commands.js";
 
 describe("slash commands", () => {
-	it("parses model output", () => {
-		const parsed = parseModelListOutput(
-			`Available models\nauto - Auto\ngpt-5.2 - GPT-5.2 (current)`,
-		);
-		expect(parsed).toEqual([
-			{ modelId: "auto", name: "Auto", current: false },
-			{ modelId: "gpt-5.2", name: "GPT-5.2", current: true },
-		]);
-	});
-
 	it("handles /model set", async () => {
 		const session = { modelId: "auto", modeId: "default" as const };
 		const result = await handleSlashCommand("model", "gpt-5.2", {
@@ -35,38 +24,6 @@ describe("slash commands", () => {
 		expect(result.handled).toBe(true);
 		expect(result.responseText).toContain("Model set to gpt-5.2");
 		expect(session.modelId).toBe("gpt-5.2");
-	});
-
-	it("handles /model set for fast variants", async () => {
-		const session = { modelId: "auto", modeId: "default" as const };
-		const result = await handleSlashCommand("model", "gpt-5.2-fast", {
-			session,
-			listModels: async () => [
-				{ modelId: "auto", name: "Auto" },
-				{ modelId: "auto-fast", name: "Auto (Fast)" },
-				{ modelId: "gpt-5.2", name: "GPT-5.2" },
-				{ modelId: "gpt-5.2-fast", name: "GPT-5.2 (Fast)" },
-			],
-		});
-
-		expect(result.handled).toBe(true);
-		expect(result.responseText).toContain("Model set to gpt-5.2-fast");
-		expect(session.modelId).toBe("gpt-5.2-fast");
-	});
-
-	it("handles legacy /model fast syntax", async () => {
-		const session = { modelId: "auto", modeId: "default" as const };
-		const result = await handleSlashCommand("model", "composer-2[fast=true]", {
-			session,
-			listModels: async () => [
-				{ modelId: "composer-2", name: "Composer 2" },
-				{ modelId: "composer-2-fast", name: "Composer 2 Fast" },
-			],
-		});
-
-		expect(result.handled).toBe(true);
-		expect(result.responseText).toContain("Model set to composer-2-fast");
-		expect(session.modelId).toBe("composer-2-fast");
 	});
 
 	it("handles /mode set", async () => {

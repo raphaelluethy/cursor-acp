@@ -307,34 +307,6 @@ export function builtInSlashCommandNames(): string[] {
 	return BUILTIN_SLASH_COMMANDS.map(formatSlashCommand);
 }
 
-export function parseModelListOutput(output: string): CursorModelDescriptor[] {
-	const models: CursorModelDescriptor[] = [];
-	const lines = output.split(/\r?\n/);
-
-	for (const line of lines) {
-		const trimmed = line.trim();
-		if (!trimmed || !trimmed.includes(" - ")) {
-			continue;
-		}
-
-		const [idPart, rest] = trimmed.split(/\s+-\s+/, 2);
-		if (!idPart || !rest) {
-			continue;
-		}
-
-		const current = /\(current\)/i.test(rest);
-		const name = rest.replace(/\(current\)/gi, "").trim();
-
-		models.push({
-			modelId: idPart.trim(),
-			name,
-			current,
-		});
-	}
-
-	return models;
-}
-
 export async function handleSlashCommand(
 	command: string,
 	args: string,

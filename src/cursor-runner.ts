@@ -14,6 +14,8 @@ export interface RunPromptOptions {
 	backendSessionId?: string;
 	modelId?: string;
 	thinkingLevel?: string;
+	thoughtParamId?: string;
+	fastValue?: string;
 	modeId?: "plan";
 	force?: boolean;
 	streamPartialOutput?: boolean;
