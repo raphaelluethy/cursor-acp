@@ -1131,9 +1131,46 @@ describe("CursorAcpAgent", () => {
 			currentValue: "true",
 			category: "_model_variant",
 		});
+		expect(session.configOptions?.map((option) => option.id)).toEqual([
+			"mode",
+			"model",
+			"fast",
+			"thinking",
+		]);
 
 		await startNativeBackend(agent, session.sessionId);
 		expect(backends[0]!.options.modelId).toBe("gpt-5.4-high-fast");
+	});
+
+	it("exposes fast config when only the base model variant is listed initially", async () => {
+		const { agent } = createAgentTestHarness({
+			models: [{ modelId: "composer-2.5", name: "Composer 2.5", current: true }],
+		});
+
+		await agent.initialize(
+			initRequest({
+				protocolVersion: 1,
+				clientCapabilities: {},
+			}),
+		);
+
+		const session = await agent.newSession(
+			newSessionRequest({
+				cwd: "/tmp",
+				mcpServers: [],
+				default_model: "composer-2.5-fast",
+			}),
+		);
+
+		expect(session.models?.currentModelId).toBe("composer-2.5-fast");
+		expect(session.configOptions?.map((option) => option.id)).toEqual([
+			"mode",
+			"model",
+			"fast",
+		]);
+		expect(session.configOptions?.find((option) => option.id === "fast")).toMatchObject({
+			currentValue: "true",
+		});
 	});
 
 	it("does not start native ACP when a config model changes before first prompt", async () => {
@@ -1171,8 +1208,8 @@ describe("CursorAcpAgent", () => {
 		});
 		expect(response.configOptions.map((option) => option.id)).toEqual([
 			"mode",
-			"fast",
 			"model",
+			"fast",
 		]);
 
 		const internalSession = agentTestAccess(agent).sessions[session.sessionId]!;
@@ -1214,8 +1251,8 @@ describe("CursorAcpAgent", () => {
 
 			expect(session.configOptions?.map((option) => option.id)).toEqual([
 				"mode",
-				"fast",
 				"model",
+				"fast",
 			]);
 
 			const response = await agent.setSessionConfigOption({
@@ -1226,8 +1263,8 @@ describe("CursorAcpAgent", () => {
 
 			expect(response.configOptions.map((option) => option.id)).toEqual([
 				"mode",
-				"fast",
 				"model",
+				"fast",
 			]);
 			expect(response.configOptions.find((option) => option.id === "mode")).toMatchObject({
 				currentValue: "yolo",
@@ -1237,6 +1274,68 @@ describe("CursorAcpAgent", () => {
 			});
 		} finally {
 			releaseNativeSession();
+		}
+	});
+
+	it("restores selected model config when loading a stored session", async () => {
+		const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-load-config-"));
+		process.env.CURSOR_ACP_CONFIG_DIR = tempRoot;
+
+		try {
+			const firstHarness = createAgentTestHarness({
+				models: [
+					{ modelId: "auto", name: "Auto", current: true },
+					{ modelId: "gpt-5.4-medium", name: "GPT-5.4" },
+					{ modelId: "gpt-5.2", name: "GPT-5.2" },
+				],
+			});
+
+			await firstHarness.agent.initialize(
+				initRequest({
+					protocolVersion: 1,
+					clientCapabilities: {},
+				}),
+			);
+			const created = await firstHarness.agent.newSession(
+				newSessionRequest({
+					cwd: "/tmp/project",
+					mcpServers: [],
+				}),
+			);
+
+			await firstHarness.agent.setSessionConfigOption({
+				sessionId: created.sessionId,
+				configId: "model",
+				value: "gpt-5.2",
+			});
+
+			const secondHarness = createAgentTestHarness({
+				models: [
+					{ modelId: "auto", name: "Auto", current: true },
+					{ modelId: "gpt-5.4-medium", name: "GPT-5.4" },
+					{ modelId: "gpt-5.2", name: "GPT-5.2" },
+				],
+			});
+
+			await secondHarness.agent.initialize(
+				initRequest({
+					protocolVersion: 1,
+					clientCapabilities: {},
+				}),
+			);
+			const loaded = await secondHarness.agent.loadSession({
+				sessionId: created.sessionId,
+				cwd: "/tmp/project",
+				mcpServers: [],
+			});
+
+			expect(loaded.models?.currentModelId).toBe("gpt-5.2");
+			expect(loaded.configOptions?.find((option) => option.id === "model")).toMatchObject({
+				currentValue: "gpt-5.2",
+			});
+		} finally {
+			delete process.env.CURSOR_ACP_CONFIG_DIR;
+			await rm(tempRoot, { recursive: true, force: true });
 		}
 	});
 

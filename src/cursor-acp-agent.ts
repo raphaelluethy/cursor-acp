@@ -56,16 +56,19 @@ import {
 	applyFastValue,
 	applyThinkingValue,
 	FAST_PARAM_ID,
-	findModelInCatalog,
+	findParameterModelInCatalog,
 	formatFastParameterOptionName,
-	getFastParameter,
-	getThinkingParameter,
+	getFastParameterForModel,
+	getThinkingParameterForModel,
+	inferFastValueFromModelId,
+	inferParameterValueFromModelId,
 	isValidFastValue,
 	isValidThinkingLevel,
+	mergeModelCatalogs,
 	normalizeModelId,
-	resolveFastValue,
+	resolveDefaultFastValue,
+	resolveDefaultThinkingLevel,
 	resolveModelId,
-	resolveThinkingLevel,
 	THINKING_PARAM_ID,
 	withCliModelParameters,
 } from "./model-id.js";
@@ -611,6 +614,7 @@ export class CursorAcpAgent implements Agent {
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
 			preferredModeId: meta.modeId,
+			preferredModelId: meta.modelId,
 			preferredThinkingLevel: meta.thinkingLevel,
 			preferredFastValue: meta.fastValue,
 			preferredBackendSessionId: meta.backendSessionId,
@@ -706,6 +710,7 @@ export class CursorAcpAgent implements Agent {
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
 			preferredModeId: meta.modeId,
+			preferredModelId: meta.modelId,
 			preferredThinkingLevel: meta.thinkingLevel,
 			preferredFastValue: meta.fastValue,
 			preferredBackendSessionId: meta.backendSessionId,
@@ -931,13 +936,13 @@ export class CursorAcpAgent implements Agent {
 			if (session.activePrompt || session.activeRun) {
 				throw RequestError.invalidParams("Cannot change fast mode during an active prompt");
 			}
-			const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
-			if (!getFastParameter(currentModel)) {
+			const fastParameter = getFastParameterForModel(session.modelCatalog, session.modelId);
+			if (!fastParameter) {
 				throw RequestError.invalidParams(
 					"Fast mode is not supported for the current model",
 				);
 			}
-			if (!isValidFastValue(currentModel, value)) {
+			if (!fastParameter.values.some((option) => option.value === value)) {
 				throw RequestError.invalidParams(`Invalid fast mode: ${value}`);
 			}
 			const nextModelId = applyFastValue(session.modelCatalog, session.modelId, value);
@@ -960,13 +965,16 @@ export class CursorAcpAgent implements Agent {
 					"Cannot change thinking level during an active prompt",
 				);
 			}
-			const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
-			if (!getThinkingParameter(currentModel)) {
+			const parameterModel = findParameterModelInCatalog(
+				session.modelCatalog,
+				session.modelId,
+			);
+			if (!getThinkingParameterForModel(session.modelCatalog, session.modelId)) {
 				throw RequestError.invalidParams(
 					"Thinking level is not supported for the current model",
 				);
 			}
-			if (!isValidThinkingLevel(currentModel, value)) {
+			if (!isValidThinkingLevel(parameterModel, value)) {
 				throw RequestError.invalidParams(`Invalid thinking level: ${value}`);
 			}
 			const nextModelId = applyThinkingValue(session.modelCatalog, session.modelId, value);
@@ -1361,13 +1369,16 @@ export class CursorAcpAgent implements Agent {
 			}
 
 			const modelCatalog = withCliModelParameters(
-				listedModels.length > 0
-					? listedModels
-					: loaded.models.availableModels.map((model) => ({
-							modelId: normalizeModelId(model.modelId),
-							name: model.name,
-							current: loaded.models?.currentModelId === model.modelId,
-						})),
+				mergeModelCatalogs(
+					listedModels.length > 0
+						? listedModels
+						: loaded.models.availableModels.map((model) => ({
+								modelId: normalizeModelId(model.modelId),
+								name: model.name,
+								current: loaded.models?.currentModelId === model.modelId,
+							})),
+					session.modelCatalog,
+				),
 			);
 			session.modelCatalog = modelCatalog;
 
@@ -1559,7 +1570,7 @@ export class CursorAcpAgent implements Agent {
 			this.logger.error("[cursor-acp] Unable to list models", error);
 		}
 
-		listed = withCliModelParameters(listed);
+		listed = withCliModelParameters(mergeModelCatalogs(listed, session.modelCatalog));
 		session.modelCatalog = listed;
 
 		const configuredModelId = resolveModelId(session.configuredModelId, listed);
@@ -1614,24 +1625,21 @@ export class CursorAcpAgent implements Agent {
 		];
 
 		if (models) {
-			const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
-			const thinkingParameter = getThinkingParameter(currentModel);
-			if (thinkingParameter && session.thinkingLevel) {
-				configOptions.push({
-					id: THINKING_PARAM_ID,
-					name: thinkingParameter.displayName ?? "Thinking",
-					description: "Thinking or reasoning level for the selected model",
-					category: "thought_level",
-					type: "select",
-					currentValue: session.thinkingLevel,
-					options: thinkingParameter.values.map((value) => ({
-						value: value.value,
-						name: value.displayName ?? value.value,
-					})),
-				});
-			}
+			configOptions.push({
+				id: "model",
+				name: "Model",
+				description: "AI model to use",
+				category: "model",
+				type: "select",
+				currentValue: session.modelId ?? models.currentModelId,
+				options: models.availableModels.map((model) => ({
+					value: model.modelId,
+					name: model.name,
+					description: model.description ?? undefined,
+				})),
+			});
 
-			const fastParameter = getFastParameter(currentModel);
+			const fastParameter = getFastParameterForModel(session.modelCatalog, session.modelId);
 			if (fastParameter && session.fastValue) {
 				configOptions.push({
 					id: FAST_PARAM_ID,
@@ -1647,29 +1655,38 @@ export class CursorAcpAgent implements Agent {
 				});
 			}
 
-			configOptions.push({
-				id: "model",
-				name: "Model",
-				description: "AI model to use",
-				category: "model",
-				type: "select",
-				currentValue: session.modelId ?? models.currentModelId,
-				options: models.availableModels.map((model) => ({
-					value: model.modelId,
-					name: model.name,
-					description: model.description ?? undefined,
-				})),
-			});
+			const thinkingParameter = getThinkingParameterForModel(
+				session.modelCatalog,
+				session.modelId,
+			);
+			if (thinkingParameter && session.thinkingLevel) {
+				configOptions.push({
+					id: THINKING_PARAM_ID,
+					name: thinkingParameter.displayName ?? "Thinking",
+					description: "Thinking or reasoning level for the selected model",
+					category: "thought_level",
+					type: "select",
+					currentValue: session.thinkingLevel,
+					options: thinkingParameter.values.map((value) => ({
+						value: value.value,
+						name: value.displayName ?? value.value,
+					})),
+				});
+			}
 		}
 
 		return configOptions;
 	}
 
 	private syncModelParameters(session: SessionState): void {
-		this.syncThinkingLevelForModel(session);
 		this.syncFastValueForModel(session);
 
 		let nextModelId = session.modelId;
+		if (session.configuredFastValue) {
+			nextModelId =
+				applyFastValue(session.modelCatalog, nextModelId, session.configuredFastValue) ??
+				nextModelId;
+		}
 		if (session.configuredThinkingLevel) {
 			nextModelId =
 				applyThinkingValue(
@@ -1678,50 +1695,64 @@ export class CursorAcpAgent implements Agent {
 					session.configuredThinkingLevel,
 				) ?? nextModelId;
 		}
-		if (session.configuredFastValue) {
-			nextModelId =
-				applyFastValue(session.modelCatalog, nextModelId, session.configuredFastValue) ??
-				nextModelId;
-		}
 		if (nextModelId && nextModelId !== session.modelId) {
 			session.modelId = nextModelId;
 			session.configuredModelId = nextModelId;
-			this.syncThinkingLevelForModel(session);
-			this.syncFastValueForModel(session);
 		}
+		this.syncFastValueForModel(session);
+		this.syncThinkingLevelForModel(session);
 	}
 
 	private syncThinkingLevelForModel(session: SessionState): void {
-		const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
-		const thinkingParameter = getThinkingParameter(currentModel);
+		const parameterModel = findParameterModelInCatalog(session.modelCatalog, session.modelId);
+		const thinkingParameter = getThinkingParameterForModel(
+			session.modelCatalog,
+			session.modelId,
+		);
 		if (!thinkingParameter) {
 			session.thinkingLevel = undefined;
 			return;
 		}
 
-		const resolved = resolveThinkingLevel(currentModel, session.configuredThinkingLevel);
+		const inferred = inferParameterValueFromModelId(
+			session.modelCatalog,
+			session.modelId,
+			THINKING_PARAM_ID,
+		);
+		const resolved = isValidThinkingLevel(parameterModel, session.configuredThinkingLevel)
+			? session.configuredThinkingLevel
+			: ((inferred && isValidThinkingLevel(parameterModel, inferred)
+					? inferred
+					: undefined) ?? resolveDefaultThinkingLevel(parameterModel));
 		session.thinkingLevel = resolved;
 		if (
 			session.configuredThinkingLevel &&
-			!isValidThinkingLevel(currentModel, session.configuredThinkingLevel)
+			!isValidThinkingLevel(parameterModel, session.configuredThinkingLevel)
 		) {
 			session.configuredThinkingLevel = resolved;
 		}
 	}
 
 	private syncFastValueForModel(session: SessionState): void {
-		const currentModel = findModelInCatalog(session.modelCatalog, session.modelId);
-		const fastParameter = getFastParameter(currentModel);
+		const parameterModel = findParameterModelInCatalog(session.modelCatalog, session.modelId);
+		const fastParameter = getFastParameterForModel(session.modelCatalog, session.modelId);
 		if (!fastParameter) {
 			session.fastValue = undefined;
 			return;
 		}
 
-		const resolved = resolveFastValue(currentModel, session.configuredFastValue);
+		const inferred = inferFastValueFromModelId(session.modelCatalog, session.modelId);
+		const resolved =
+			parameterModel && isValidFastValue(parameterModel, session.configuredFastValue)
+				? session.configuredFastValue
+				: ((inferred && fastParameter.values.some((value) => value.value === inferred)
+						? inferred
+						: undefined) ?? resolveDefaultFastValue(parameterModel));
 		session.fastValue = resolved;
 		if (
 			session.configuredFastValue &&
-			!isValidFastValue(currentModel, session.configuredFastValue)
+			parameterModel &&
+			!isValidFastValue(parameterModel, session.configuredFastValue)
 		) {
 			session.configuredFastValue = resolved;
 		}
@@ -2194,6 +2225,7 @@ export class CursorAcpAgent implements Agent {
 		await recordSessionMeta(session.cwd, session.sessionId, {
 			backendSessionId: session.backendSessionId,
 			modeId: session.modeId,
+			modelId: session.configuredModelId ?? session.modelId,
 			thinkingLevel: session.configuredThinkingLevel ?? session.thinkingLevel,
 			fastValue: session.configuredFastValue ?? session.fastValue,
 		});
