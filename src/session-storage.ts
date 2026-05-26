@@ -29,6 +29,7 @@ export interface SessionMetaEntry {
 	cwd: string;
 	backendSessionId?: string;
 	modeId?: SessionModeId;
+	modelId?: string;
 	thinkingLevel?: string;
 	fastValue?: string;
 }
@@ -92,6 +93,7 @@ export async function recordSessionMeta(
 	meta: {
 		backendSessionId?: string;
 		modeId?: SessionModeId;
+		modelId?: string;
 		thinkingLevel?: string;
 		fastValue?: string;
 	},
@@ -103,6 +105,7 @@ export async function recordSessionMeta(
 		cwd,
 		backendSessionId: meta.backendSessionId,
 		modeId: meta.modeId,
+		modelId: meta.modelId,
 		thinkingLevel: meta.thinkingLevel,
 		fastValue: meta.fastValue,
 	};
@@ -118,6 +121,7 @@ export async function recordSessionMeta(
 export async function readSessionMeta(filePath: string): Promise<{
 	backendSessionId?: string;
 	modeId?: SessionModeId;
+	modelId?: string;
 	thinkingLevel?: string;
 	fastValue?: string;
 }> {
@@ -126,6 +130,7 @@ export async function readSessionMeta(filePath: string): Promise<{
 		const lines = content.trim().split("\n").filter(Boolean);
 		let lastBackend: string | undefined;
 		let lastModeId: SessionModeId | undefined;
+		let lastModelId: string | undefined;
 		let lastThinkingLevel: string | undefined;
 		let lastFastValue: string | undefined;
 		for (const line of lines) {
@@ -134,6 +139,7 @@ export async function readSessionMeta(filePath: string): Promise<{
 					type?: string;
 					backendSessionId?: string;
 					modeId?: string;
+					modelId?: string;
 					thinkingLevel?: string;
 					fastValue?: string;
 				};
@@ -149,6 +155,9 @@ export async function readSessionMeta(filePath: string): Promise<{
 						lastModeId = normalizedModeId;
 					}
 				}
+				if (typeof entry.modelId === "string" && entry.modelId.trim()) {
+					lastModelId = entry.modelId.trim();
+				}
 				if (typeof entry.thinkingLevel === "string" && entry.thinkingLevel.trim()) {
 					lastThinkingLevel = entry.thinkingLevel.trim();
 				}
@@ -162,6 +171,7 @@ export async function readSessionMeta(filePath: string): Promise<{
 		return {
 			backendSessionId: lastBackend,
 			modeId: lastModeId,
+			modelId: lastModelId,
 			thinkingLevel: lastThinkingLevel,
 			fastValue: lastFastValue,
 		};
