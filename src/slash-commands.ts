@@ -93,7 +93,8 @@ const NATIVE_PASSTHROUGH_SLASH_COMMANDS: AvailableCommand[] = [
 	},
 	{
 		name: "simplify",
-		description: "Find low-info comments, one-off helpers, perf issues, and reuse opportunities",
+		description:
+			"Find low-info comments, one-off helpers, perf issues, and reuse opportunities",
 		input: null,
 	},
 	{
