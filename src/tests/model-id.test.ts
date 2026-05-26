@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
 	applyFastValue,
 	applyThinkingValue,
+	getFastParameterForModel,
+	inferFastValueFromModelId,
+	mergeModelCatalogs,
 	normalizeModelId,
 	resolveModelId,
 	withCliModelParameters,
@@ -83,5 +86,28 @@ describe("model id normalization", () => {
 				{ modelId: "gpt-5.5-high-fast", name: "GPT-5.5 High Fast" },
 			]),
 		).toBe("gpt-5.5-high-fast");
+	});
+
+	it("infers fast config when only the base model variant is listed", () => {
+		const catalog = withCliModelParameters([{ modelId: "composer-2.5", name: "Composer 2.5" }]);
+
+		expect(getFastParameterForModel(catalog, "composer-2.5-fast")).toMatchObject({
+			id: "fast",
+		});
+		expect(inferFastValueFromModelId(catalog, "composer-2.5-fast")).toBe("true");
+	});
+
+	it("merges sibling variants from an earlier model listing", () => {
+		const merged = mergeModelCatalogs(
+			[{ modelId: "composer-2.5-fast", name: "Composer 2.5 Fast", current: true }],
+			withCliModelParameters([
+				{ modelId: "composer-2.5", name: "Composer 2.5" },
+				{ modelId: "composer-2.5-fast", name: "Composer 2.5 Fast" },
+			]),
+		);
+
+		expect(
+			getFastParameterForModel(withCliModelParameters(merged), "composer-2.5-fast"),
+		).toMatchObject({ id: "fast" });
 	});
 });

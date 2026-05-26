@@ -1,4 +1,8 @@
-import type { CursorModelDescriptor, ModelParameterDescriptor } from "./slash-commands.js";
+import type {
+	CursorModelDescriptor,
+	ModelParameterDescriptor,
+	ModelVariantDescriptor,
+} from "./slash-commands.js";
 
 export const THINKING_PARAM_ID = "thinking";
 export const FAST_PARAM_ID = "fast";
@@ -348,6 +352,265 @@ export function findModelInCatalog(
 	return modelCatalog.find((model) => model.modelId === normalized);
 }
 
+/** Keep sibling variants when a later model listing is temporarily incomplete. */
+export function mergeModelCatalogs(
+	primary: CursorModelDescriptor[],
+	fallback: CursorModelDescriptor[] | undefined,
+): CursorModelDescriptor[] {
+	if (!fallback || fallback.length === 0) {
+		return primary;
+	}
+
+	const byId = new Map<string, CursorModelDescriptor>();
+	for (const model of fallback) {
+		byId.set(normalizeModelId(model.modelId), model);
+	}
+	for (const model of primary) {
+		const modelId = normalizeModelId(model.modelId);
+		const previous = byId.get(modelId);
+		if (!previous) {
+			byId.set(modelId, model);
+			continue;
+		}
+
+		byId.set(modelId, {
+			...previous,
+			...model,
+			parameters: model.parameters?.length ? model.parameters : previous.parameters,
+			variants: model.variants?.length ? model.variants : previous.variants,
+		});
+	}
+
+	return [...byId.values()];
+}
+
+function modelGroupId(modelId: string): string {
+	return parseCliVariant(normalizeModelId(modelId)).groupId;
+}
+
+function parameterMetadataScore(model: CursorModelDescriptor | undefined): number {
+	return Number(Boolean(getFastParameter(model))) + Number(Boolean(getThinkingParameter(model)));
+}
+
+/** Resolve parameter metadata from a model group, not only the exact selected variant. */
+export function findParameterModelInCatalog(
+	modelCatalog: CursorModelDescriptor[] | undefined,
+	modelId: string | undefined,
+): CursorModelDescriptor | undefined {
+	if (!modelCatalog || typeof modelId !== "string") {
+		return undefined;
+	}
+
+	const normalized = normalizeModelId(modelId);
+	const candidates: CursorModelDescriptor[] = [];
+	const direct = findModelInCatalog(modelCatalog, normalized);
+
+	if (normalized.endsWith("-fast")) {
+		const baseModel = findModelInCatalog(modelCatalog, normalized.slice(0, -"-fast".length));
+		if (baseModel) {
+			candidates.push(baseModel);
+		}
+	}
+
+	if (direct) {
+		candidates.push(direct);
+	}
+
+	const groupId = modelGroupId(normalized);
+	for (const candidate of modelCatalog) {
+		if (modelGroupId(candidate.modelId) !== groupId) {
+			continue;
+		}
+		if (!candidates.includes(candidate)) {
+			candidates.push(candidate);
+		}
+	}
+
+	let best = direct;
+	let bestScore = parameterMetadataScore(direct);
+	for (const candidate of candidates) {
+		const score = parameterMetadataScore(candidate);
+		if (score > bestScore) {
+			best = candidate;
+			bestScore = score;
+		}
+	}
+
+	return best;
+}
+
+function variantParamValue(
+	variant: ModelVariantDescriptor | undefined,
+	parameterId: string,
+): string | undefined {
+	return variant?.params.find((param) => param.id === parameterId)?.value;
+}
+
+function findVariantInModel(
+	model: CursorModelDescriptor | undefined,
+	modelId: string | undefined,
+): ModelVariantDescriptor | undefined {
+	if (!model?.variants?.length || typeof modelId !== "string") {
+		return undefined;
+	}
+
+	const normalized = normalizeModelId(modelId);
+	return model.variants.find(
+		(variant) =>
+			typeof variant.modelId === "string" && normalizeModelId(variant.modelId) === normalized,
+	);
+}
+
+function findVariantByDescriptorParams(
+	modelCatalog: CursorModelDescriptor[] | undefined,
+	modelId: string | undefined,
+	params: Record<string, string>,
+): string | undefined {
+	const parameterModel = findParameterModelInCatalog(modelCatalog, modelId);
+	if (!parameterModel?.variants?.length) {
+		return undefined;
+	}
+
+	const currentVariant =
+		findVariantInModel(parameterModel, modelId) ??
+		parameterModel.variants.find((variant) => variant.isDefault);
+	const targetParams = new Map<string, string>();
+	for (const param of currentVariant?.params ?? []) {
+		targetParams.set(param.id, param.value);
+	}
+	for (const [id, value] of Object.entries(params)) {
+		targetParams.set(id, value);
+	}
+
+	for (const variant of parameterModel.variants) {
+		if (typeof variant.modelId !== "string") {
+			continue;
+		}
+		let matches = true;
+		for (const [id, value] of targetParams) {
+			if (variantParamValue(variant, id) !== value) {
+				matches = false;
+				break;
+			}
+		}
+		if (matches) {
+			return normalizeModelId(variant.modelId);
+		}
+	}
+
+	return undefined;
+}
+
+export function inferParameterValueFromModelId(
+	modelCatalog: CursorModelDescriptor[] | undefined,
+	modelId: string | undefined,
+	parameterId: string,
+): string | undefined {
+	const parameterModel = findParameterModelInCatalog(modelCatalog, modelId);
+	const variant = findVariantInModel(parameterModel, modelId);
+	const variantValue = variantParamValue(variant, parameterId);
+	if (
+		variantValue &&
+		parameterModel?.parameters?.some(
+			(parameter) =>
+				parameter.id === parameterId &&
+				parameter.values.some((value) => value.value === variantValue),
+		)
+	) {
+		return variantValue;
+	}
+
+	return undefined;
+}
+
+export function getThinkingParameterForModel(
+	modelCatalog: CursorModelDescriptor[] | undefined,
+	modelId: string | undefined,
+): ModelParameterDescriptor | undefined {
+	const parameterModel = findParameterModelInCatalog(modelCatalog, modelId);
+	const thinkingParameter = getThinkingParameter(parameterModel);
+	if (!thinkingParameter) {
+		return undefined;
+	}
+
+	if (inferParameterValueFromModelId(modelCatalog, modelId, THINKING_PARAM_ID)) {
+		return thinkingParameter;
+	}
+
+	const direct = findModelInCatalog(modelCatalog, modelId);
+	return direct === parameterModel && getThinkingParameter(direct)
+		? thinkingParameter
+		: undefined;
+}
+
+const SYNTHETIC_FAST_PARAMETER: ModelParameterDescriptor = {
+	id: FAST_PARAM_ID,
+	displayName: "Fast",
+	values: [
+		{ value: "false", displayName: "Default" },
+		{ value: "true", displayName: "Fast" },
+	],
+};
+
+/** Fast toggle metadata for a selected model, including inferred `-fast` variants. */
+export function getFastParameterForModel(
+	modelCatalog: CursorModelDescriptor[] | undefined,
+	modelId: string | undefined,
+): ModelParameterDescriptor | undefined {
+	const parameterModel = findParameterModelInCatalog(modelCatalog, modelId);
+	const existing = getFastParameter(parameterModel);
+	if (existing) {
+		return existing;
+	}
+
+	if (!modelCatalog || typeof modelId !== "string") {
+		return undefined;
+	}
+
+	const normalized = normalizeModelId(modelId);
+	if (normalized.endsWith("-fast")) {
+		const baseId = normalized.slice(0, -"-fast".length);
+		if (findModelInCatalog(modelCatalog, baseId)) {
+			return SYNTHETIC_FAST_PARAMETER;
+		}
+	}
+
+	const fastVariantId = `${normalized}-fast`;
+	if (findModelInCatalog(modelCatalog, fastVariantId)) {
+		return SYNTHETIC_FAST_PARAMETER;
+	}
+
+	return undefined;
+}
+
+export function inferFastValueFromModelId(
+	modelCatalog: CursorModelDescriptor[] | undefined,
+	modelId: string | undefined,
+): string | undefined {
+	const variantValue = inferParameterValueFromModelId(modelCatalog, modelId, FAST_PARAM_ID);
+	if (variantValue) {
+		return variantValue;
+	}
+
+	if (!modelCatalog || typeof modelId !== "string") {
+		return undefined;
+	}
+
+	const normalized = normalizeModelId(modelId);
+	if (normalized.endsWith("-fast")) {
+		const baseId = normalized.slice(0, -"-fast".length);
+		if (findModelInCatalog(modelCatalog, baseId)) {
+			return "true";
+		}
+	}
+
+	if (findModelInCatalog(modelCatalog, `${normalized}-fast`)) {
+		return "false";
+	}
+
+	return undefined;
+}
+
 export function getThinkingParameter(
 	model: CursorModelDescriptor | undefined,
 ): ModelParameterDescriptor | undefined {
@@ -520,6 +783,13 @@ export function applyFastValue(
 	if (fastValue !== "true" && fastValue !== "false") {
 		return undefined;
 	}
+	const descriptorVariant = findVariantByDescriptorParams(modelCatalog, modelId, {
+		[FAST_PARAM_ID]: fastValue,
+	});
+	if (descriptorVariant) {
+		return descriptorVariant;
+	}
+
 	return findVariantByParams(withCliModelParameters(modelCatalog), modelId, {
 		[FAST_PARAM_ID]: fastValue,
 	});
@@ -533,6 +803,13 @@ export function applyThinkingValue(
 	if (!modelCatalog || !modelId) {
 		return undefined;
 	}
+	const descriptorVariant = findVariantByDescriptorParams(modelCatalog, modelId, {
+		[THINKING_PARAM_ID]: thinkingValue,
+	});
+	if (descriptorVariant) {
+		return descriptorVariant;
+	}
+
 	return findVariantByParams(withCliModelParameters(modelCatalog), modelId, {
 		[THINKING_PARAM_ID]: thinkingValue,
 	});
