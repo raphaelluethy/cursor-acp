@@ -8,6 +8,8 @@ import type {
 export const THINKING_PARAM_ID = "thinking";
 export const FAST_PARAM_ID = "fast";
 
+const THINKING_PARAM_IDS = [THINKING_PARAM_ID, "reasoning", "effort"];
+
 const AUTO_MODEL: CursorModelDescriptor = {
 	modelId: "auto",
 	name: "Auto",
@@ -166,9 +168,10 @@ export function buildSdkModelSelection(
 	}
 
 	const parameterModel = findParameterModelInCatalog(modelCatalog, normalizedModelId);
+	const thinkingParameter = getThinkingParameter(parameterModel);
 	const params: NonNullable<ModelSelection["params"]> = [];
 	if (isValidThinkingLevel(parameterModel, thinkingLevel)) {
-		params.push({ id: THINKING_PARAM_ID, value: thinkingLevel! });
+		params.push({ id: thinkingParameter!.id, value: thinkingLevel! });
 	}
 	if (isValidFastValue(parameterModel, fastValue)) {
 		params.push({ id: FAST_PARAM_ID, value: fastValue! });
@@ -561,7 +564,7 @@ export function getThinkingParameterForModel(
 		return undefined;
 	}
 
-	if (inferParameterValueFromModelId(modelCatalog, modelId, THINKING_PARAM_ID)) {
+	if (inferThinkingValueFromModelId(modelCatalog, modelId)) {
 		return thinkingParameter;
 	}
 
@@ -639,11 +642,29 @@ export function inferFastValueFromModelId(
 	return undefined;
 }
 
+/** Infer the current thinking/reasoning/effort value from a concrete catalog model id. */
+export function inferThinkingValueFromModelId(
+	modelCatalog: CursorModelDescriptor[] | undefined,
+	modelId: string | undefined,
+): string | undefined {
+	const parameterModel = findParameterModelInCatalog(modelCatalog, modelId);
+	const thinkingParameter = getThinkingParameter(parameterModel);
+	return thinkingParameter
+		? inferParameterValueFromModelId(modelCatalog, modelId, thinkingParameter.id)
+		: undefined;
+}
+
+/** First catalog parameter named `thinking`, `reasoning`, or `effort` that has values. */
 export function getThinkingParameter(
 	model: CursorModelDescriptor | undefined,
 ): ModelParameterDescriptor | undefined {
-	const parameter = model?.parameters?.find((entry) => entry.id === THINKING_PARAM_ID);
-	return parameter && parameter.values.length > 0 ? parameter : undefined;
+	for (const parameterId of THINKING_PARAM_IDS) {
+		const parameter = model?.parameters?.find((entry) => entry.id === parameterId);
+		if (parameter?.values.length) {
+			return parameter;
+		}
+	}
+	return undefined;
 }
 
 export function getFastParameter(
@@ -680,7 +701,7 @@ export function resolveDefaultThinkingLevel(
 
 	const defaultVariant = model?.variants?.find((variant) => variant.isDefault);
 	const variantThinking = defaultVariant?.params.find(
-		(param) => param.id === THINKING_PARAM_ID,
+		(param) => param.id === thinkingParameter.id,
 	)?.value;
 	if (
 		variantThinking &&
@@ -831,11 +852,19 @@ export function applyThinkingValue(
 	if (!modelCatalog || !modelId) {
 		return undefined;
 	}
+	const parameterModel = findParameterModelInCatalog(modelCatalog, modelId);
+	const thinkingParameter = getThinkingParameter(parameterModel);
+	if (!thinkingParameter?.values.some((value) => value.value === thinkingValue)) {
+		return undefined;
+	}
 	const descriptorVariant = findVariantByDescriptorParams(modelCatalog, modelId, {
-		[THINKING_PARAM_ID]: thinkingValue,
+		[thinkingParameter.id]: thinkingValue,
 	});
 	if (descriptorVariant) {
 		return descriptorVariant;
+	}
+	if (!parameterModel?.variants?.some((variant) => variant.modelId)) {
+		return parameterModel?.modelId;
 	}
 
 	return findVariantByParams(withCliModelParameters(modelCatalog), modelId, {

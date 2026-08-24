@@ -1212,11 +1212,38 @@ describe("CursorAcpAgent", () => {
 		});
 	});
 
-	it("uses a boolean fast toggle for clients that advertise ACP 1.4 support", async () => {
-		const { agent } = createAgentTestHarness({
+	it("exposes a fast toggle and reasoning selector for parameterized SDK models", async () => {
+		const { agent, client } = createAgentTestHarness({
 			models: [
-				{ modelId: "composer-2.5", name: "Composer 2.5", current: true },
-				{ modelId: "composer-2.5-fast", name: "Composer 2.5 Fast" },
+				{ modelId: "auto", name: "Auto", current: true },
+				{
+					modelId: "grok-4.6",
+					name: "Cursor Grok 4.6",
+					parameters: [
+						{
+							id: "effort",
+							displayName: "Effort",
+							values: [
+								{ value: "low", displayName: "Low" },
+								{ value: "high", displayName: "High" },
+							],
+						},
+						{
+							id: "fast",
+							displayName: "Fast",
+							values: [{ value: "false" }, { value: "true", displayName: "Fast" }],
+						},
+					],
+					variants: [
+						{
+							params: [
+								{ id: "effort", value: "high" },
+								{ id: "fast", value: "true" },
+							],
+							isDefault: true,
+						},
+					],
+				},
 			],
 		});
 		await agent.initialize(
@@ -1226,15 +1253,50 @@ describe("CursorAcpAgent", () => {
 		);
 		const session = await agent.newSession(
 			newSessionRequest({
-				default_config_options: { model: "composer-2.5", fast: true },
+				cwd: "/tmp",
+				mcpServers: [],
 			}),
 		);
-		const fast = session.configOptions?.find((option) => option.id === "fast");
+		expect(session.models?.currentModelId).toBe("auto");
+		expect(session.configOptions?.map((option) => option.id)).toEqual(["mode", "model"]);
+
+		client.updates.length = 0;
+		const modelResponse = await agent.setSessionConfigOption({
+			sessionId: session.sessionId,
+			configId: "model",
+			value: "grok-4.6",
+		});
+		const fast = modelResponse.configOptions.find((option) => option.id === "fast");
+		const thinking = modelResponse.configOptions.find((option) => option.id === "thinking");
 
 		expect(fast).toMatchObject({
 			type: "boolean",
 			category: "model_config",
 			currentValue: true,
+		});
+		expect(thinking).toMatchObject({
+			type: "select",
+			name: "Effort",
+			category: "thought_level",
+			currentValue: "high",
+		});
+		const modelConfigUpdate = client.updates.find(
+			(update) => update.update.sessionUpdate === "config_option_update",
+		);
+		expect(modelConfigUpdate?.update).toEqual({
+			sessionUpdate: "config_option_update",
+			configOptions: modelResponse.configOptions,
+		});
+
+		const thinkingResponse = await agent.setSessionConfigOption({
+			sessionId: session.sessionId,
+			configId: "thinking",
+			value: "low",
+		});
+		expect(
+			thinkingResponse.configOptions.find((option) => option.id === "thinking"),
+		).toMatchObject({
+			currentValue: "low",
 		});
 
 		const response = await agent.setSessionConfigOption({

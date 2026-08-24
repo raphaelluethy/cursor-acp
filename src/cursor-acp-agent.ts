@@ -66,7 +66,7 @@ import {
 	getFastParameterForModel,
 	getThinkingParameterForModel,
 	inferFastValueFromModelId,
-	inferParameterValueFromModelId,
+	inferThinkingValueFromModelId,
 	isValidFastValue,
 	isValidThinkingLevel,
 	mergeModelCatalogs,
@@ -919,9 +919,17 @@ export class CursorAcpAgent implements Agent {
 			);
 		}
 
-		return await this.withSessionConfigMutation(session, async () => {
+		const response = await this.withSessionConfigMutation(session, async () => {
 			return await this.setSessionConfigOptionLocked(session, params.configId, value);
 		});
+		await this.emitOrQueueNotification(session, {
+			sessionId: session.sessionId,
+			update: {
+				sessionUpdate: "config_option_update",
+				configOptions: response.configOptions,
+			},
+		});
+		return response;
 	}
 
 	private async setSessionConfigOptionLocked(
@@ -1742,11 +1750,7 @@ export class CursorAcpAgent implements Agent {
 			return;
 		}
 
-		const inferred = inferParameterValueFromModelId(
-			session.modelCatalog,
-			session.modelId,
-			THINKING_PARAM_ID,
-		);
+		const inferred = inferThinkingValueFromModelId(session.modelCatalog, session.modelId);
 		const resolved = isValidThinkingLevel(parameterModel, session.configuredThinkingLevel)
 			? session.configuredThinkingLevel
 			: ((inferred && isValidThinkingLevel(parameterModel, inferred)

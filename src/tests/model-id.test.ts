@@ -138,4 +138,31 @@ describe("model id normalization", () => {
 			],
 		});
 	});
+
+	it("preserves the SDK reasoning parameter id behind the thinking selector", () => {
+		const catalog = [
+			{
+				modelId: "gpt-5.6-sol",
+				name: "GPT-5.6 Sol",
+				parameters: [
+					{
+						id: "reasoning",
+						values: [{ value: "low" }, { value: "high" }],
+					},
+					{
+						id: "fast",
+						values: [{ value: "false" }, { value: "true" }],
+					},
+				],
+			},
+		];
+
+		expect(buildSdkModelSelection("gpt-5.6-sol", catalog, "high", "true")).toEqual({
+			id: "gpt-5.6-sol",
+			params: [
+				{ id: "reasoning", value: "high" },
+				{ id: "fast", value: "true" },
+			],
+		});
+	});
 });
