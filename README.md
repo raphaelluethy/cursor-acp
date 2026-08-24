@@ -23,6 +23,7 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - **Cursor commands and skills**: Relies on native ACP `available_commands_update` for Cursor/user commands and skills
 - **Native command precedence**: When Cursor advertises a slash command, the adapter forwards that command to native ACP instead of intercepting it locally
 - **Mode switching**: Maps wrapper modes to native `agent`, `ask`, and `plan`
+- **Auto-review mode** (`auto-review`): Passes Cursor CLI `--auto-review` (Smart Auto). Safe tool calls auto-run; remaining denials are surfaced to the ACP client. Distinct from **Yolo**, which auto-approves everything.
 
 ### Wrapper compatibility
 
@@ -63,9 +64,16 @@ Older builds accepted `bypassPermissions` and `autoRunAllCommands` as synonyms f
 - **Permissions**: Prompt-time tool visibility now comes from the stream-json path, while wrapper mode handling still controls retries and Yolo behavior.
 - **Resume / listing**: Resume still uses native **`session/load`** when a stored backend session id is available; native Cursor ACP still does not expose everything the outer protocol can represent (see **Known limitations**).
 
+### Auto-review mode (`auto-review`)
+
+- **What it is**: Cursor CLI **Auto-review (Smart Auto)** — a server classifier auto-runs safe tool calls and asks for the rest. Enable it with ACP mode id **`auto-review`** (Zed `default_mode`, `/mode auto-review`, or the mode picker). The adapter passes `--auto-review` on the stream-json prompt path.
+- **What it is not**: Not Yolo (`--force` / auto-approve everything). Not Bugbot / PR review. Not cloud `skipReviewerRequest`.
+- **Remaining prompts**: Calls the classifier blocks are still offered to your ACP client (same retry/permission channel as Default). Choosing “always allow” still upgrades the session to Yolo.
+- **Native `agent acp`**: Cursor’s native ACP server does not expose an Auto-review session mode (`agent` / `ask` / `plan` only). `agent acp --help` has no `--auto-review` flag. This adapter therefore does **not** rely on native ACP for Auto-review.
+
 ### Yolo mode (`yolo`)
 
-- **What it does now**: **Yolo** only changes how the adapter answers **native ACP permission requests**—it auto-selects an allow-style option (preferring `allow_always`, then `allow_once`, then another allow). It does **not** introduce a separate native Cursor mode: both **Default** and **Yolo** map to native **`agent`**; the difference is whether permissions are surfaced to your client or approved inside the adapter.
+- **What it does now**: **Yolo** only changes how the adapter answers **native ACP permission requests**—it auto-selects an allow-style option (preferring `allow_always`, then `allow_once`, then another allow). It does **not** introduce a separate native Cursor mode: **Default**, **Auto-review**, and **Yolo** all map to native **`agent`**. Yolo auto-approves remaining permissions; Auto-review passes `--auto-review` and still surfaces leftover prompts.
 - **Why that can break expectations**: If you relied on the old wrapper’s auto-approval semantics (or on names like `bypassPermissions` / `autoRunAllCommands`) as identical to “unrestricted agent” in the legacy path, behavior may differ because approvals are now tied to **native permission options** and to the **ACP permission** channel.
 - **Configuration**: Set `default_mode` to **`yolo`** in your ACP client configuration (for example the Zed custom agent entry) to get automatic approval. Do not use legacy names like `bypassPermissions` or `autoRunAllCommands`; see **Legacy Yolo mode name aliases removed**.
 
@@ -186,21 +194,21 @@ Zed can pass the initial mode, model, fast flag, and thinking level through the 
 }
 ```
 
-- `default_mode` — one of `default`, `yolo`, `plan`, or `ask` (legacy alias: `acceptEdits` → `default`)
+- `default_mode` — one of `default`, `auto-review`, `yolo`, `plan`, or `ask` (legacy aliases: `acceptEdits` / `agent` → `default`; `autoReview` → `auto-review`)
 - `default_model` — optional model ID forwarded from the ACP client when supported
 - `default_fast` — optional fast variant selection (`true` or `false`) when the selected model has a matching Cursor CLI fast variant
 - `default_thinking` — optional thinking/reasoning selection, for example `none`, `low`, `medium`, `high`, `xhigh`, `max`, `true`, or `false`, depending on the selected model variants
 
 Omit keys you do not need. There is no separate adapter-specific config file for these defaults anymore. As a fallback, `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING` can be set in the adapter process environment.
 
-The mode picker in Zed (and other ACP clients) lists **Default**, **Yolo**, **Ask**, and **Plan** — including **Yolo**, which is implemented only in this adapter (Cursor’s native session still uses its usual Agent/Plan/Ask wiring under the hood). Model-specific **Fast** and **Thinking** controls appear when the selected Cursor CLI model has compatible variants.
+The mode picker in Zed (and other ACP clients) lists **Default**, **Auto-review**, **Yolo**, **Ask**, and **Plan**. **Auto-review** and **Yolo** are implemented in this adapter: Cursor’s native session still uses its usual Agent/Plan/Ask wiring under the hood. Auto-review maps to CLI `--auto-review`; Yolo maps to `--force` plus adapter-side auto-approval of native permission requests. Model-specific **Fast** and **Thinking** controls appear when the selected Cursor CLI model has compatible variants.
 
 ### Using in Zed
 
 1. Open the Agent Panel with `Cmd+?` (macOS) or `Ctrl+?` (Linux)
 2. Click the `+` button in the top right and select **Cursor**
 3. On first use, run the `/login` slash command to authenticate with Cursor
-4. The default mode is `default`; if you want tool execution without repeated prompts, set `"default_mode": "yolo"` on the Zed agent entry
+4. The default mode is `default`; if you want Cursor’s classifier to auto-run safe tools and prompt for the rest, set `"default_mode": "auto-review"`. For unrestricted auto-approval, use `"default_mode": "yolo"`.
 
 You can also bind a keyboard shortcut to quickly open a new Cursor thread by adding the following to your `keymap.json` (open via `zed: open keymap file`):
 
@@ -245,8 +253,8 @@ bun run check       # Run lint and format checks
 ## Migration Notes
 
 - See **Breaking changes (native ACP & Yolo)** for semantic and protocol differences when upgrading from the legacy stream-json wrapper.
-- `default`, `yolo`, `ask`, and `plan` are the advertised modes
-- `acceptEdits` is a deprecated alias for `default` (still accepted). For Yolo, use **`yolo`**—`bypassPermissions` and `autoRunAllCommands` are no longer accepted (see **Legacy Yolo mode name aliases removed**)
+- `default`, `auto-review`, `yolo`, `ask`, and `plan` are the advertised modes
+- `acceptEdits` is a deprecated alias for `default` (still accepted). `autoReview` is accepted as an alias for **`auto-review`**. For Yolo, use **`yolo`**—`bypassPermissions` and `autoRunAllCommands` are no longer accepted (see **Legacy Yolo mode name aliases removed**)
 - `debug` is not exposed
 - Custom commands and skills are forwarded from native `cursor-agent acp`
 

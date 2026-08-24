@@ -109,6 +109,52 @@ process.stdout.write(JSON.stringify(event) + "\\n");
 		expect(result.resultEvent?.force).toBe(true);
 	});
 
+	it("respects auto-review flag in spawned arguments", async () => {
+		const scriptBody = `
+const autoReview = process.argv.includes("--auto-review");
+const force = process.argv.includes("--force");
+const event = { type: "result", subtype: "success", is_error: false, autoReview, force };
+process.stdout.write(JSON.stringify(event) + "\\n");
+`;
+		const scriptPath = await writeFakeAgentScript("runner-auto-review.js", scriptBody);
+		const runner = new CursorCliRunner(scriptPath, noopLogger);
+
+		const run = runner.startPrompt({
+			workspace: tempScriptDir!,
+			prompt: "hello",
+			autoReview: true,
+		});
+
+		const result = await run.completed;
+		expect(result.resultEvent?.autoReview).toBe(true);
+		expect(result.resultEvent?.force).toBe(false);
+	});
+
+	it("does not pass --auto-review when force is also set", async () => {
+		const scriptBody = `
+const autoReview = process.argv.includes("--auto-review");
+const force = process.argv.includes("--force");
+const event = { type: "result", subtype: "success", is_error: false, autoReview, force };
+process.stdout.write(JSON.stringify(event) + "\\n");
+`;
+		const scriptPath = await writeFakeAgentScript(
+			"runner-force-over-auto-review.js",
+			scriptBody,
+		);
+		const runner = new CursorCliRunner(scriptPath, noopLogger);
+
+		const run = runner.startPrompt({
+			workspace: tempScriptDir!,
+			prompt: "hello",
+			force: true,
+			autoReview: true,
+		});
+
+		const result = await run.completed;
+		expect(result.resultEvent?.force).toBe(true);
+		expect(result.resultEvent?.autoReview).toBe(false);
+	});
+
 	it("respects mode flag in spawned arguments", async () => {
 		const scriptBody = `
 const modeIndex = process.argv.indexOf("--mode");

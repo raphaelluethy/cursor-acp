@@ -20,6 +20,7 @@ export interface RunPromptOptions {
 	modelId?: string;
 	modeId?: "plan" | "ask";
 	force?: boolean;
+	autoReview?: boolean;
 	streamPartialOutput?: boolean;
 	env?: Environment;
 	onEvent?: (event: CursorStreamEvent) => Promise<void> | void;
@@ -145,6 +146,8 @@ export class CursorCliRunner implements CursorCliRunnerLike {
 
 		if (options.force) {
 			args.push("--force");
+		} else if (options.autoReview) {
+			args.push("--auto-review");
 		}
 
 		if (options.streamPartialOutput) {

@@ -104,7 +104,7 @@ export type TestSetNativeModeResponse = SetSessionModeResponse | Record<string, 
 
 export type LegacyPromptHandler = (
 	promptText: string,
-	options: Pick<RunPromptOptions, "backendSessionId" | "force" | "onEvent">,
+	options: Pick<RunPromptOptions, "backendSessionId" | "force" | "autoReview" | "onEvent">,
 ) => Promise<{
 	events: CursorStreamEvent[];
 	resultEvent?: CursorStreamEvent;

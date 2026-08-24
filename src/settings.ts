@@ -1,13 +1,20 @@
 export const ADAPTER_NAME = "cursor-acp";
 
-export const ADVERTISED_MODE_IDS = ["default", "yolo", "ask", "plan"] as const;
+export const ADVERTISED_MODE_IDS = ["default", "auto-review", "yolo", "ask", "plan"] as const;
 
 export const LEGACY_MODE_ALIASES = {
 	acceptEdits: "default",
 	agent: "default",
+	autoReview: "auto-review",
 } as const;
 
 export type SessionModeId = (typeof ADVERTISED_MODE_IDS)[number];
+
+export type AgentSessionModeId = Extract<SessionModeId, "default" | "auto-review" | "yolo">;
+
+export function isAgentSessionMode(modeId: SessionModeId): modeId is AgentSessionModeId {
+	return modeId === "default" || modeId === "auto-review" || modeId === "yolo";
+}
 
 export const DEFAULT_MODE_ID: SessionModeId = "default";
 
@@ -55,6 +62,8 @@ export function modeDisplayName(modeId: SessionModeId): string {
 	switch (modeId) {
 		case "default":
 			return "Default";
+		case "auto-review":
+			return "Auto-review";
 		case "yolo":
 			return "Yolo";
 		case "ask":
@@ -72,6 +81,12 @@ export function availableModes(currentModeId: SessionModeId) {
 				id: "default",
 				name: "Default",
 				description: "Standard agent mode with client-mediated permission prompts",
+			},
+			{
+				id: "auto-review",
+				name: "Auto-review",
+				description:
+					"Smart Auto: Cursor's classifier auto-runs safe tool calls and prompts the client for the rest",
 			},
 			{
 				id: "yolo",

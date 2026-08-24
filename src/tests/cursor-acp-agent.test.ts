@@ -252,6 +252,7 @@ function createAgentTestHarness(
 		promptText: string;
 		backendSessionId?: string;
 		force?: boolean;
+		autoReview?: boolean;
 	}[] = [];
 
 	const runner: TestCliRunner = {
@@ -274,12 +275,14 @@ function createAgentTestHarness(
 				promptText: options.prompt,
 				backendSessionId: options.backendSessionId,
 				force: options.force,
+				autoReview: options.autoReview,
 			});
 			const completed = (async () => {
 				if (legacyPromptHandler) {
 					return await legacyPromptHandler(options.prompt, {
 						backendSessionId: options.backendSessionId,
 						force: options.force,
+						autoReview: options.autoReview,
 						onEvent: options.onEvent,
 					});
 				}
@@ -903,6 +906,45 @@ describe("CursorAcpAgent", () => {
 		);
 
 		expect(session.modes?.currentModeId).toBe("default");
+	});
+
+	it("honors requested auto-review mode when creating a new session", async () => {
+		const { agent, client, legacyPromptCalls } = createAgentTestHarness();
+
+		await agent.initialize(
+			initRequest({
+				protocolVersion: 1,
+				clientCapabilities: {},
+			}),
+		);
+
+		const session = await agent.newSession(
+			newSessionRequest({
+				cwd: "/tmp",
+				mcpServers: [],
+				modeId: "auto-review",
+			}),
+		);
+
+		expect(session.modes?.currentModeId).toBe("auto-review");
+		expect(session.modes?.availableModes?.map((mode) => mode.id)).toEqual([
+			"default",
+			"auto-review",
+			"yolo",
+			"ask",
+			"plan",
+		]);
+
+		await agent.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "run pwd" }],
+		});
+
+		expect(legacyPromptCalls[0]).toMatchObject({
+			force: false,
+			autoReview: true,
+		});
+		expect(client.permissionCalls).toHaveLength(0);
 	});
 
 	it("honors requested yolo mode when creating a new session", async () => {
@@ -1631,6 +1673,52 @@ describe("CursorAcpAgent", () => {
 		expect(client.permissionCalls[0]!.toolCall.title).toBe("pwd");
 	});
 
+	it("surfaces rejected stream-json tool calls to the client in auto-review mode", async () => {
+		const { agent, client, setLegacyPromptHandler } = createAgentTestHarness();
+
+		await agent.initialize(
+			initRequest({
+				protocolVersion: 1,
+				clientCapabilities: {},
+			}),
+		);
+		const session = await agent.newSession(
+			newSessionRequest({
+				cwd: "/tmp",
+				mcpServers: [],
+				modeId: "auto-review",
+			}),
+		);
+
+		setLegacyPromptHandler(async (_promptText, options) => {
+			await options.onEvent?.({
+				type: "tool_call",
+				subtype: "completed",
+				call_id: "t1",
+				tool_call: {
+					shellToolCall: {
+						args: { command: "rm -rf /" },
+						result: { rejected: { command: "rm -rf /", reason: "blocked" } },
+					},
+				},
+			});
+			return {
+				events: [],
+				resultEvent: { type: "result", subtype: "success", is_error: false },
+				stderr: "",
+				exitCode: 0,
+			};
+		});
+
+		await agent.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: "text", text: "delete everything" }],
+		});
+
+		expect(client.permissionCalls).toHaveLength(1);
+		expect(client.permissionCalls[0]!.toolCall.title).toBe("rm -rf /");
+	});
+
 	it("auto-approves permission requests in yolo mode", async () => {
 		const { agent, backends, client } = createAgentTestHarness();
 
@@ -1684,6 +1772,49 @@ describe("CursorAcpAgent", () => {
 		});
 
 		expect(client.permissionCalls).toHaveLength(0);
+	});
+
+	it("forwards permission requests in auto-review mode instead of auto-approving", async () => {
+		const { agent, backends, client } = createAgentTestHarness();
+
+		await agent.initialize(
+			initRequest({
+				protocolVersion: 1,
+				clientCapabilities: {},
+			}),
+		);
+		const session = await agent.newSession(
+			newSessionRequest({
+				cwd: "/tmp",
+				mcpServers: [],
+				modeId: "auto-review",
+			}),
+		);
+
+		await startNativeBackend(agent, session.sessionId);
+		const response = await backends[0]!.callbacks.onRequestPermission({
+			sessionId: backends[0]!.nativeSessionId!,
+			options: [
+				{
+					optionId: "allow-always",
+					kind: "allow_always",
+					name: "Always allow",
+				},
+			],
+			toolCall: {
+				toolCallId: "t1",
+				title: "`pwd`",
+				rawInput: { command: "pwd" },
+			},
+		});
+
+		expect(response).toMatchObject({
+			outcome: {
+				outcome: "selected",
+				optionId: "allow-always",
+			},
+		});
+		expect(client.permissionCalls).toHaveLength(1);
 	});
 
 	it("auto-approves edit-with-diff permission requests in yolo mode", async () => {

@@ -85,11 +85,13 @@ import {
 } from "./slash-commands.js";
 import { CustomSkill, loadCustomSkills } from "./skills.js";
 import {
+	AgentSessionModeId,
 	availableModes,
 	DEFAULT_MODE_ID,
 	getEnvDefaultMode,
 	getEnvDefaultModel,
 	getEnvDefaultThinking,
+	isAgentSessionMode,
 	normalizeModeId,
 	SessionModeId,
 } from "./settings.js";
@@ -461,7 +463,7 @@ export interface SessionState {
 	configuredThinkingLevel?: string;
 	fastValue?: string;
 	configuredFastValue?: string;
-	lastAgentModeId: "default" | "yolo";
+	lastAgentModeId: AgentSessionModeId;
 	cancelled: boolean;
 	activePrompt?: ActivePromptState;
 	activeRun?: ActiveRunState;
@@ -834,7 +836,7 @@ export class CursorAcpAgent implements Agent {
 
 		if (
 			firstAttempt.stopReason === "end_turn" &&
-			session.modeId === "default" &&
+			(session.modeId === "default" || session.modeId === "auto-review") &&
 			firstAttempt.rejectedToolCalls.length > 0
 		) {
 			const approved = await this.requestPermissionToRetry(
@@ -1098,7 +1100,7 @@ export class CursorAcpAgent implements Agent {
 			configuredModelId,
 			configuredThinkingLevel,
 			configuredFastValue,
-			lastAgentModeId: modeId === "yolo" ? "yolo" : "default",
+			lastAgentModeId: isAgentSessionMode(modeId) ? modeId : "default",
 			cancelled: false,
 			nativeAvailableCommands: [],
 			customSlashCommands: [],
@@ -1452,7 +1454,7 @@ export class CursorAcpAgent implements Agent {
 			) {
 				const translated = this.translateNativeMode(session, loaded.modes.currentModeId);
 				session.modeId = translated;
-				if (translated === "default" || translated === "yolo") {
+				if (isAgentSessionMode(translated)) {
 					session.lastAgentModeId = translated;
 				}
 			}
@@ -1804,20 +1806,23 @@ export class CursorAcpAgent implements Agent {
 	): {
 		modeId?: "plan" | "ask";
 		force: boolean;
+		autoReview: boolean;
 	} {
 		if (forceRetry) {
-			return { force: true };
+			return { force: true, autoReview: false };
 		}
 
 		switch (session.modeId) {
 			case "plan":
-				return { modeId: "plan", force: false };
+				return { modeId: "plan", force: false, autoReview: false };
 			case "ask":
-				return { modeId: "ask", force: false };
+				return { modeId: "ask", force: false, autoReview: false };
 			case "yolo":
-				return { force: true };
+				return { force: true, autoReview: false };
+			case "auto-review":
+				return { force: false, autoReview: true };
 			case "default":
-				return { force: false };
+				return { force: false, autoReview: false };
 			default:
 				unreachable(session.modeId, this.logger);
 		}
@@ -1858,6 +1863,7 @@ export class CursorAcpAgent implements Agent {
 			modelId: session.modelId,
 			modeId: modeSettings.modeId,
 			force: modeSettings.force,
+			autoReview: modeSettings.autoReview,
 			onEvent: async (event) => {
 				const mapped = mapCursorEventToAcp(event, {
 					sessionId: session.sessionId,
@@ -2177,6 +2183,7 @@ export class CursorAcpAgent implements Agent {
 	private modeToNativeMode(modeId: SessionModeId): NativeModeId {
 		switch (modeId) {
 			case "default":
+			case "auto-review":
 			case "yolo":
 				return "agent";
 			case "ask":
@@ -2216,7 +2223,7 @@ export class CursorAcpAgent implements Agent {
 
 	private setSessionModeState(session: SessionState, modeId: SessionModeId): void {
 		session.modeId = modeId;
-		if (modeId === "default" || modeId === "yolo") {
+		if (isAgentSessionMode(modeId)) {
 			session.lastAgentModeId = modeId;
 		}
 	}

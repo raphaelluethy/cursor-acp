@@ -100,6 +100,31 @@ describe("slash commands", () => {
 		expect(session.modeId).toBe("yolo");
 	});
 
+	it("handles /mode set for auto-review", async () => {
+		const session = { modelId: "auto", modeId: "default" as const };
+		const result = await handleSlashCommand("mode", "auto-review", {
+			session,
+			auth: mockAuth,
+			listModels: async () => [],
+		});
+
+		expect(result.handled).toBe(true);
+		expect(result.responseText).toContain("Mode set to Auto-review");
+		expect(session.modeId).toBe("auto-review");
+	});
+
+	it("accepts autoReview as an alias for auto-review", async () => {
+		const session = { modelId: "auto", modeId: "default" as const };
+		const result = await handleSlashCommand("mode", "autoReview", {
+			session,
+			auth: mockAuth,
+			listModels: async () => [],
+		});
+
+		expect(result.handled).toBe(true);
+		expect(session.modeId).toBe("auto-review");
+	});
+
 	it("rejects legacy yolo alias names for /mode", async () => {
 		const session = { modelId: "auto", modeId: "default" as const };
 		const result = await handleSlashCommand("mode", "bypassPermissions", {
