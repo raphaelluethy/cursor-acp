@@ -3,9 +3,7 @@ import {
 	Client,
 	ClientCapabilities,
 	ClientSideConnection,
-	LoadSessionResponse,
 	NewSessionRequest,
-	NewSessionResponse,
 	PromptRequest,
 	PromptResponse,
 	ReadTextFileRequest,
@@ -15,14 +13,17 @@ import {
 	SessionNotification,
 	SetSessionModeRequest,
 	SetSessionModeResponse,
-	SetSessionModelRequest,
-	SetSessionModelResponse,
 	WriteTextFileRequest,
 	WriteTextFileResponse,
 	ndJsonStream,
 } from "@agentclientprotocol/sdk";
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { getDefaultCursorAgentCommand } from "./cursor-agent-command.js";
+import type {
+	ExtendedLoadSessionResponse,
+	ExtendedNewSessionResponse,
+	LegacySetSessionModelResponse,
+} from "./legacy-session-models.js";
 import { normalizeModelId } from "./model-id.js";
 import { nodeToWebReadable, nodeToWebWritable, Logger, stripAnsi } from "./utils.js";
 
@@ -59,12 +60,12 @@ export interface NativeSessionBackend {
 	readonly alive: boolean;
 	cancel(): Promise<void>;
 	close(): Promise<void>;
-	createSessionBackend(): Promise<NewSessionResponse>;
-	loadSessionBackend(nativeSessionId: string): Promise<LoadSessionResponse>;
+	createSessionBackend(): Promise<ExtendedNewSessionResponse>;
+	loadSessionBackend(nativeSessionId: string): Promise<ExtendedLoadSessionResponse>;
 	prompt(promptText: string): Promise<PromptResponse>;
-	restartBackend(): Promise<NewSessionResponse>;
+	restartBackend(): Promise<ExtendedNewSessionResponse>;
 	setNativeMode(modeId: NativeModeId): Promise<SetSessionModeResponse | void>;
-	setNativeModel(modelId: string): Promise<SetSessionModelResponse | void>;
+	setNativeModel(modelId: string): Promise<LegacySetSessionModelResponse | void>;
 }
 
 class NativeClientHandler implements Client {
@@ -141,7 +142,7 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 		return this.child !== null && this.connection !== null && !this.connection.signal.aborted;
 	}
 
-	async createSessionBackend(): Promise<NewSessionResponse> {
+	async createSessionBackend(): Promise<ExtendedNewSessionResponse> {
 		await this.ensureStarted();
 		const connection = this.requireConnection();
 
@@ -153,7 +154,7 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 		return response;
 	}
 
-	async loadSessionBackend(nativeSessionId: string): Promise<LoadSessionResponse> {
+	async loadSessionBackend(nativeSessionId: string): Promise<ExtendedLoadSessionResponse> {
 		await this.ensureStarted();
 		const connection = this.requireConnection();
 
@@ -166,7 +167,7 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 		return response;
 	}
 
-	async restartBackend(): Promise<NewSessionResponse> {
+	async restartBackend(): Promise<ExtendedNewSessionResponse> {
 		await this.close();
 		return await this.createSessionBackend();
 	}
@@ -200,15 +201,10 @@ export class CursorNativeAcpClient implements NativeSessionBackend {
 		return await connection.setSessionMode(request);
 	}
 
-	async setNativeModel(modelId: string): Promise<SetSessionModelResponse | void> {
-		await this.ensureStarted();
-		const connection = this.requireConnection();
-
-		const request: SetSessionModelRequest = {
-			sessionId: this.requireNativeSessionId(),
-			modelId: normalizeModelId(modelId),
-		};
-		return await connection.unstable_setSessionModel(request);
+	async setNativeModel(_modelId: string): Promise<LegacySetSessionModelResponse | void> {
+		// ACP 1.4 removed the unstable session/set_model method. Production prompts
+		// now select models through the Cursor SDK; this bridge remains load-only.
+		return {};
 	}
 
 	async cancel(): Promise<void> {

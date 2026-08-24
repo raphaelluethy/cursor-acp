@@ -1,6 +1,5 @@
 import type {
 	InitializeRequest,
-	LoadSessionResponse,
 	NewSessionRequest,
 	NewSessionResponse,
 	PromptResponse,
@@ -12,6 +11,10 @@ import type {
 	ExtendedInitializeRequest,
 	ExtendedNewSessionRequest,
 } from "../acp-request-extensions.js";
+import type {
+	ExtendedLoadSessionResponse,
+	ExtendedNewSessionResponse,
+} from "../legacy-session-models.js";
 import type { CursorAcpClient } from "../cursor-acp-client.js";
 import type { CursorAcpAgent, SessionState } from "../cursor-acp-agent.js";
 import type {
@@ -56,7 +59,7 @@ export interface CursorAcpAgentTestAccess {
 	ensureBackend(session: SessionState): Promise<void>;
 	applyNativeSessionModelsAndModes(
 		session: SessionState,
-		loaded: LoadSessionResponse,
+		loaded: ExtendedLoadSessionResponse,
 	): Promise<void>;
 	buildConfigOptions(session: SessionState): NewSessionResponse["configOptions"];
 	restartBackend(session: SessionState): Promise<void>;
@@ -96,7 +99,7 @@ export type TestCursorAcpClient = CursorAcpClient & {
 	permissionCalls: RequestPermissionRequest[];
 };
 
-export type TestNativeSessionResult = NewSessionResponse | LoadSessionResponse;
+export type TestNativeSessionResult = ExtendedNewSessionResponse | ExtendedLoadSessionResponse;
 
 export type TestPromptResponse = PromptResponse;
 
@@ -104,7 +107,7 @@ export type TestSetNativeModeResponse = SetSessionModeResponse | Record<string, 
 
 export type LegacyPromptHandler = (
 	promptText: string,
-	options: Pick<RunPromptOptions, "backendSessionId" | "force" | "autoReview" | "onEvent">,
+	options: Pick<RunPromptOptions, "backendSessionId" | "reviewPolicy" | "onEvent">,
 ) => Promise<{
 	events: CursorStreamEvent[];
 	resultEvent?: CursorStreamEvent;

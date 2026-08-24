@@ -90,7 +90,7 @@ for (const ev of events) {
 		expect(receivedEvents[2]?.type).toBe("result");
 	});
 
-	it("respects force flag in spawned arguments", async () => {
+	it("maps run-everything review policy to the force CLI flag", async () => {
 		const scriptBody = `
 const force = process.argv.includes("--force");
 const event = { type: "result", subtype: "success", is_error: false, force };
@@ -102,14 +102,14 @@ process.stdout.write(JSON.stringify(event) + "\\n");
 		const run = runner.startPrompt({
 			workspace: tempScriptDir!,
 			prompt: "hello",
-			force: true,
+			reviewPolicy: "run-everything",
 		});
 
 		const result = await run.completed;
 		expect(result.resultEvent?.force).toBe(true);
 	});
 
-	it("respects auto-review flag in spawned arguments", async () => {
+	it("maps Auto Review policy to the auto-review CLI flag", async () => {
 		const scriptBody = `
 const autoReview = process.argv.includes("--auto-review");
 const force = process.argv.includes("--force");
@@ -122,7 +122,7 @@ process.stdout.write(JSON.stringify(event) + "\\n");
 		const run = runner.startPrompt({
 			workspace: tempScriptDir!,
 			prompt: "hello",
-			autoReview: true,
+			reviewPolicy: "auto-review",
 		});
 
 		const result = await run.completed;
@@ -130,7 +130,7 @@ process.stdout.write(JSON.stringify(event) + "\\n");
 		expect(result.resultEvent?.force).toBe(false);
 	});
 
-	it("does not pass --auto-review when force is also set", async () => {
+	it("does not pass --auto-review for run-everything policy", async () => {
 		const scriptBody = `
 const autoReview = process.argv.includes("--auto-review");
 const force = process.argv.includes("--force");
@@ -146,8 +146,7 @@ process.stdout.write(JSON.stringify(event) + "\\n");
 		const run = runner.startPrompt({
 			workspace: tempScriptDir!,
 			prompt: "hello",
-			force: true,
-			autoReview: true,
+			reviewPolicy: "run-everything",
 		});
 
 		const result = await run.completed;

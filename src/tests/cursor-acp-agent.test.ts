@@ -3,13 +3,15 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type {
-	LoadSessionResponse,
-	NewSessionResponse,
 	PromptResponse,
 	RequestPermissionRequest,
 	RequestPermissionResponse,
 	SessionNotification,
 } from "@agentclientprotocol/sdk";
+import type {
+	ExtendedLoadSessionResponse,
+	ExtendedNewSessionResponse,
+} from "../legacy-session-models.js";
 import {
 	CreateNativeSessionOptions,
 	NativeModeId,
@@ -104,7 +106,7 @@ class FakeNativeBackend implements NativeSessionBackend {
 		this.closeCalls += 1;
 	}
 
-	async createSessionBackend(): Promise<NewSessionResponse> {
+	async createSessionBackend(): Promise<ExtendedNewSessionResponse> {
 		this.createCalls += 1;
 		await (this.backendOptions.createSessionBlocker ??
 			this.backendOptions.createSessionBlockers?.[this.index - 1]);
@@ -144,7 +146,7 @@ class FakeNativeBackend implements NativeSessionBackend {
 		};
 	}
 
-	async loadSessionBackend(nativeSessionId: string): Promise<LoadSessionResponse> {
+	async loadSessionBackend(nativeSessionId: string): Promise<ExtendedLoadSessionResponse> {
 		this.loadCalls.push(nativeSessionId);
 		this.nativeSessionId = nativeSessionId;
 		await this.callbacks.onSessionUpdate({
@@ -191,7 +193,7 @@ class FakeNativeBackend implements NativeSessionBackend {
 		return { stopReason: "end_turn" };
 	}
 
-	async restartBackend(): Promise<NewSessionResponse> {
+	async restartBackend(): Promise<ExtendedNewSessionResponse> {
 		return await this.createSessionBackend();
 	}
 
@@ -251,8 +253,7 @@ function createAgentTestHarness(
 	const legacyPromptCalls: {
 		promptText: string;
 		backendSessionId?: string;
-		force?: boolean;
-		autoReview?: boolean;
+		reviewPolicy?: RunPromptOptions["reviewPolicy"];
 	}[] = [];
 
 	const runner: TestCliRunner = {
@@ -274,15 +275,13 @@ function createAgentTestHarness(
 			legacyPromptCalls.push({
 				promptText: options.prompt,
 				backendSessionId: options.backendSessionId,
-				force: options.force,
-				autoReview: options.autoReview,
+				reviewPolicy: options.reviewPolicy,
 			});
 			const completed = (async () => {
 				if (legacyPromptHandler) {
 					return await legacyPromptHandler(options.prompt, {
 						backendSessionId: options.backendSessionId,
-						force: options.force,
-						autoReview: options.autoReview,
+						reviewPolicy: options.reviewPolicy,
 						onEvent: options.onEvent,
 					});
 				}
@@ -497,7 +496,7 @@ describe("CursorAcpAgent", () => {
 
 		expect(response.stopReason).toBe("end_turn");
 		expect(legacyPromptCalls.map((call) => call.promptText)).toEqual(["/mode plan"]);
-		expect(agentTestAccess(agent).sessions[session.sessionId]?.modeId).toBe("default");
+		expect(agentTestAccess(agent).sessions[session.sessionId]?.modeId).toBe("auto-review");
 	});
 
 	it("forwards native slash commands when advertised with a leading slash", async () => {
@@ -888,7 +887,7 @@ describe("CursorAcpAgent", () => {
 		]);
 	});
 
-	it("uses default mode by default", async () => {
+	it("uses auto-review mode by default", async () => {
 		const { agent } = createAgentTestHarness();
 
 		await agent.initialize(
@@ -905,7 +904,7 @@ describe("CursorAcpAgent", () => {
 			}),
 		);
 
-		expect(session.modes?.currentModeId).toBe("default");
+		expect(session.modes?.currentModeId).toBe("auto-review");
 	});
 
 	it("honors requested auto-review mode when creating a new session", async () => {
@@ -928,7 +927,6 @@ describe("CursorAcpAgent", () => {
 
 		expect(session.modes?.currentModeId).toBe("auto-review");
 		expect(session.modes?.availableModes?.map((mode) => mode.id)).toEqual([
-			"default",
 			"auto-review",
 			"yolo",
 			"ask",
@@ -941,8 +939,7 @@ describe("CursorAcpAgent", () => {
 		});
 
 		expect(legacyPromptCalls[0]).toMatchObject({
-			force: false,
-			autoReview: true,
+			reviewPolicy: "auto-review",
 		});
 		expect(client.permissionCalls).toHaveLength(0);
 	});
@@ -1171,7 +1168,7 @@ describe("CursorAcpAgent", () => {
 		});
 		expect(session.configOptions?.find((option) => option.id === "fast")).toMatchObject({
 			currentValue: "true",
-			category: "_model_variant",
+			category: "model_config",
 		});
 		expect(session.configOptions?.map((option) => option.id)).toEqual([
 			"mode",
@@ -1212,6 +1209,43 @@ describe("CursorAcpAgent", () => {
 		]);
 		expect(session.configOptions?.find((option) => option.id === "fast")).toMatchObject({
 			currentValue: "true",
+		});
+	});
+
+	it("uses a boolean fast toggle for clients that advertise ACP 1.4 support", async () => {
+		const { agent } = createAgentTestHarness({
+			models: [
+				{ modelId: "composer-2.5", name: "Composer 2.5", current: true },
+				{ modelId: "composer-2.5-fast", name: "Composer 2.5 Fast" },
+			],
+		});
+		await agent.initialize(
+			initRequest({
+				clientCapabilities: { session: { configOptions: { boolean: {} } } },
+			}),
+		);
+		const session = await agent.newSession(
+			newSessionRequest({
+				default_config_options: { model: "composer-2.5", fast: true },
+			}),
+		);
+		const fast = session.configOptions?.find((option) => option.id === "fast");
+
+		expect(fast).toMatchObject({
+			type: "boolean",
+			category: "model_config",
+			currentValue: true,
+		});
+
+		const response = await agent.setSessionConfigOption({
+			sessionId: session.sessionId,
+			configId: "fast",
+			type: "boolean",
+			value: false,
+		});
+		expect(response.configOptions.find((option) => option.id === "fast")).toMatchObject({
+			type: "boolean",
+			currentValue: false,
 		});
 	});
 
@@ -1503,20 +1537,19 @@ describe("CursorAcpAgent", () => {
 		expect(session.modes?.currentModeId).toBe("yolo");
 	});
 
-	it("reports terminal auth metadata using the configured native command", async () => {
-		const agent = new CursorAcpAgent(new FakeClient(), {
-			nativeCommand: "cursor-agent",
-		});
+	it("advertises the ACP terminal auth method when supported", async () => {
+		const agent = new CursorAcpAgent(new FakeClient());
 
 		const response = await agent.initialize(
 			initRequest({
 				protocolVersion: 1,
-				clientCapabilities: { _meta: { "terminal-auth": true } },
+				clientCapabilities: { auth: { terminal: true } },
 			}),
 		);
 
-		expect(response.authMethods?.[0]?._meta?.["terminal-auth"]).toMatchObject({
-			command: "cursor-agent",
+		expect(response.authMethods?.[0]).toMatchObject({
+			type: "terminal",
+			id: "cursor_sdk_login",
 			args: ["login"],
 		});
 	});

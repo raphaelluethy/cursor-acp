@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PromptRequest } from "@agentclientprotocol/sdk";
 import {
 	parseLeadingSlashCommand,
+	promptToCursorImages,
 	promptToCursorText,
 	rewriteMcpSlashCommand,
 } from "../prompt-conversion.js";
@@ -48,6 +49,26 @@ describe("prompt conversion", () => {
 			args: "feat(parser)",
 			raw: "/commit\nfeat(parser)",
 		});
+	});
+
+	it("preserves ACP images for SDK messages", () => {
+		const request: PromptRequest = {
+			sessionId: "s1",
+			prompt: [
+				{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+				{
+					type: "image",
+					data: "",
+					uri: "https://example.com/image.png",
+					mimeType: "image/png",
+				},
+			],
+		};
+
+		expect(promptToCursorImages(request)).toEqual([
+			{ data: "aW1hZ2U=", mimeType: "image/png" },
+			{ url: "https://example.com/image.png" },
+		]);
 	});
 
 	it("parses mcp marker without treating it as an argument", () => {

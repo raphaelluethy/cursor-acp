@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	applyFastValue,
 	applyThinkingValue,
+	buildSdkModelSelection,
 	getFastParameterForModel,
 	inferFastValueFromModelId,
 	mergeModelCatalogs,
@@ -109,5 +110,32 @@ describe("model id normalization", () => {
 		expect(
 			getFastParameterForModel(withCliModelParameters(merged), "composer-2.5-fast"),
 		).toMatchObject({ id: "fast" });
+	});
+
+	it("builds the SDK parameterized model selection used by Zed controls", () => {
+		const catalog = [
+			{
+				modelId: "composer-2.5",
+				name: "Composer 2.5",
+				parameters: [
+					{
+						id: "fast",
+						values: [{ value: "false" }, { value: "true" }],
+					},
+					{
+						id: "thinking",
+						values: [{ value: "medium" }, { value: "high" }],
+					},
+				],
+			},
+		];
+
+		expect(buildSdkModelSelection("composer-2.5", catalog, "high", "true")).toEqual({
+			id: "composer-2.5",
+			params: [
+				{ id: "thinking", value: "high" },
+				{ id: "fast", value: "true" },
+			],
+		});
 	});
 });

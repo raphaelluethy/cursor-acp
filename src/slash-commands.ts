@@ -80,8 +80,8 @@ const BUILTIN_SLASH_COMMANDS: AvailableCommand[] = [
 		description: "Get or set active mode",
 		input: { hint: "<mode-id>" },
 	},
-	{ name: "login", description: "Sign in via Cursor CLI", input: null },
-	{ name: "logout", description: "Sign out via Cursor CLI", input: null },
+	{ name: "login", description: "Sign in to the Cursor SDK", input: null },
+	{ name: "logout", description: "Sign out of the Cursor SDK", input: null },
 	{ name: "status", description: "Show login status", input: null },
 ];
 

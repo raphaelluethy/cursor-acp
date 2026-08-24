@@ -1,0 +1,6 @@
+{
+	"$schema": "https://nubjs.com/schema/latest.json",
+	"install": {
+		"linker": "isolated"
+	}
+}

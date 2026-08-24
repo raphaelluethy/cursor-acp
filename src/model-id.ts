@@ -1,3 +1,4 @@
+import type { ModelSelection } from "@cursor/sdk";
 import type {
 	CursorModelDescriptor,
 	ModelParameterDescriptor,
@@ -150,6 +151,33 @@ export function ensureAutoModel(models: CursorModelDescriptor[]): CursorModelDes
 	}
 
 	return [AUTO_MODEL, ...normalized];
+}
+
+/** Convert the ACP model plus its Zed config controls to the SDK's parameterized model shape. */
+export function buildSdkModelSelection(
+	modelId: string,
+	modelCatalog?: CursorModelDescriptor[],
+	thinkingLevel?: string,
+	fastValue?: string,
+): ModelSelection {
+	const normalizedModelId = normalizeModelId(modelId);
+	if (normalizedModelId === "auto") {
+		return { id: normalizedModelId };
+	}
+
+	const parameterModel = findParameterModelInCatalog(modelCatalog, normalizedModelId);
+	const params: NonNullable<ModelSelection["params"]> = [];
+	if (isValidThinkingLevel(parameterModel, thinkingLevel)) {
+		params.push({ id: THINKING_PARAM_ID, value: thinkingLevel! });
+	}
+	if (isValidFastValue(parameterModel, fastValue)) {
+		params.push({ id: FAST_PARAM_ID, value: fastValue! });
+	}
+
+	return {
+		id: parameterModel?.modelId ?? normalizedModelId,
+		...(params.length > 0 ? { params } : {}),
+	};
 }
 
 export function resolveModelId(

@@ -14,19 +14,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+      - name: Setup Nub
+        uses: nubjs/setup-nub@v0
         with:
-          bun-version: latest
+          nub-version: 0.7.5
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: nub ci
 
       - name: Run Oxlint
-        run: bun run lint
+        run: nub run lint
 
       - name: Check formatting
-        run: bun run format:check
+        run: nub run format:check
 
   test:
     name: Test
@@ -35,16 +35,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+      - name: Setup Nub
+        uses: nubjs/setup-nub@v0
         with:
-          bun-version: latest
+          nub-version: 0.7.5
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: nub ci
 
       - name: Run tests
-        run: bun run test:run
+        run: nub run test:run
 
   typecheck:
     name: Typecheck
@@ -53,16 +53,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+      - name: Setup Nub
+        uses: nubjs/setup-nub@v0
         with:
-          bun-version: latest
+          nub-version: 0.7.5
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: nub ci
 
       - name: Run typecheck
-        run: bun run typecheck
+        run: nub run typecheck
 
   build:
     name: Build
@@ -71,16 +71,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+      - name: Setup Nub
+        uses: nubjs/setup-nub@v0
         with:
-          bun-version: latest
+          nub-version: 0.7.5
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: nub ci
 
       - name: Build
-        run: bun run build
+        run: nub run build
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

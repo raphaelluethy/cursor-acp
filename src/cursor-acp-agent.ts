@@ -21,8 +21,6 @@ import {
 	RequestPermissionResponse,
 	ResumeSessionRequest,
 	ResumeSessionResponse,
-	SetSessionModelRequest,
-	SetSessionModelResponse,
 	SetSessionModeRequest,
 	SetSessionModeResponse,
 	SetSessionConfigOptionRequest,
@@ -42,7 +40,6 @@ import {
 } from "./acp-request-extensions.js";
 import { CursorAuth, CursorAuthClient } from "./auth.js";
 import type { CursorAcpClient } from "./cursor-acp-client.js";
-import { getDefaultCursorAgentCommand } from "./cursor-agent-command.js";
 import { CachedToolUse, mapCursorEventToAcp, RejectedToolCall } from "./cursor-event-mapper.js";
 import {
 	CreateNativeSessionOptions,
@@ -51,7 +48,15 @@ import {
 	NativeSessionBackend,
 	NativeSessionCallbacks,
 } from "./cursor-native-acp-client.js";
-import { CursorCliRunner, type CursorCliRunnerLike } from "./cursor-cli-runner.js";
+import type { CursorRunner, RunPromptOptions } from "./cursor-runner.js";
+import { CursorSdkRunner } from "./cursor-sdk-runner.js";
+import type {
+	ExtendedNewSessionResponse,
+	ExtendedResumeSessionResponse,
+	LegacySessionModels,
+	LegacySetSessionModelRequest,
+	LegacySetSessionModelResponse,
+} from "./legacy-session-models.js";
 import {
 	applyFastValue,
 	applyThinkingValue,
@@ -72,7 +77,11 @@ import {
 	THINKING_PARAM_ID,
 	withCliModelParameters,
 } from "./model-id.js";
-import { parseLeadingSlashCommand, promptToCursorText } from "./prompt-conversion.js";
+import {
+	parseLeadingSlashCommand,
+	promptToCursorImages,
+	promptToCursorText,
+} from "./prompt-conversion.js";
 import {
 	CustomSlashCommand,
 	CursorModelDescriptor,
@@ -361,6 +370,9 @@ function modelCandidatesFrom(raw: LooseSessionDefaults): unknown[] {
 
 function pickParameterValue(...candidates: unknown[]): string | undefined {
 	for (const candidate of candidates) {
+		if (typeof candidate === "boolean") {
+			return String(candidate);
+		}
 		if (typeof candidate !== "string") {
 			continue;
 		}
@@ -469,9 +481,9 @@ export interface SessionState {
 	activeRun?: ActiveRunState;
 	backendSessionId?: string;
 	/** Populated from native `session/new` or `session/load` when available. */
-	nativeSessionModels?: NewSessionResponse["models"];
-	/** Populated from CLI model listing before native model metadata is available. */
-	fallbackSessionModels?: NewSessionResponse["models"];
+	nativeSessionModels?: LegacySessionModels;
+	/** Populated from the active runner's model catalog. */
+	fallbackSessionModels?: LegacySessionModels;
 	/** Set when `createBackend` attempted native `session/load`: `true` if load worked, `false` if we fell back to `session/new`. */
 	nativeLoadSucceeded?: boolean;
 	nativeAvailableCommands: AvailableCommand[];
@@ -489,7 +501,7 @@ export interface SessionState {
 }
 
 export interface CursorAcpAgentOptions {
-	runner?: CursorCliRunnerLike;
+	runner?: CursorRunner;
 	auth?: CursorAuthClient;
 	logger?: Logger;
 	createNativeClient?: (
@@ -507,7 +519,7 @@ export class CursorAcpAgent implements Agent {
 	private defaultThinkingLevel?: string;
 	private defaultFastValue?: string;
 
-	private readonly runner: CursorCliRunnerLike;
+	private readonly runner: CursorRunner;
 	private readonly auth: CursorAuthClient;
 	private readonly logger: Logger;
 	private readonly createNativeClient: (
@@ -520,9 +532,9 @@ export class CursorAcpAgent implements Agent {
 		private readonly client: CursorAcpClient,
 		options: CursorAcpAgentOptions = {},
 	) {
-		this.runner = options.runner ?? new CursorCliRunner();
-		this.auth = options.auth ?? new CursorAuth();
 		this.logger = options.logger ?? console;
+		this.runner = options.runner ?? new CursorSdkRunner(undefined, this.logger);
+		this.auth = options.auth ?? new CursorAuth();
 		this.nativeCommand = options.nativeCommand;
 		this.createNativeClient =
 			options.createNativeClient ??
@@ -542,17 +554,17 @@ export class CursorAcpAgent implements Agent {
 		const authMethod: NonNullable<InitializeResponse["authMethods"]>[number] = {
 			id: "cursor_login",
 			name: "Cursor Login",
-			description: "Authenticate using Cursor CLI credentials",
+			description: "Authenticate the Cursor SDK in your browser",
 		};
-
-		if (request.clientCapabilities?._meta?.["terminal-auth"] === true) {
-			authMethod._meta = {
-				"terminal-auth": {
-					command: this.nativeCommand ?? getDefaultCursorAgentCommand(),
-					args: ["login"],
-					label: "Cursor CLI Login",
-				},
-			};
+		const authMethods: NonNullable<InitializeResponse["authMethods"]> = [authMethod];
+		if (request.clientCapabilities?.auth?.terminal === true) {
+			authMethods.unshift({
+				type: "terminal",
+				id: "cursor_sdk_login",
+				name: "Cursor SDK Login",
+				description: "Open an interactive browser login for the Cursor SDK",
+				args: ["login"],
+			});
 		}
 
 		return {
@@ -571,7 +583,6 @@ export class CursorAcpAgent implements Agent {
 					_meta: {
 						supportsSessionModes: true,
 						supportsSetMode: true,
-						supportsSetModel: true,
 					},
 					fork: {},
 					resume: {},
@@ -580,14 +591,14 @@ export class CursorAcpAgent implements Agent {
 			},
 			agentInfo: {
 				name: packageJson.name,
-				title: "Cursor CLI",
+				title: "Cursor SDK",
 				version: packageJson.version,
 			},
-			authMethods: [authMethod],
+			authMethods,
 		};
 	}
 
-	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
+	async newSession(params: NewSessionRequest): Promise<ExtendedNewSessionResponse> {
 		const sessionId = randomUUID();
 		return await this.createSession({
 			sessionId,
@@ -684,7 +695,7 @@ export class CursorAcpAgent implements Agent {
 		mcpServers?: NewSessionRequest["mcpServers"];
 	}): Promise<{
 		modes: NewSessionResponse["modes"];
-		models: NewSessionResponse["models"];
+		models?: LegacySessionModels;
 		configOptions?: NewSessionResponse["configOptions"];
 	}> {
 		const filePath = await findSessionFile(params.sessionId, params.cwd);
@@ -755,6 +766,7 @@ export class CursorAcpAgent implements Agent {
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
 		const session = this.requireSession(params.sessionId);
 		let promptText = promptToCursorText(params);
+		const promptImages = promptToCursorImages(params);
 
 		const slash = parseLeadingSlashCommand(promptText);
 		if (slash.hasSlash) {
@@ -828,7 +840,7 @@ export class CursorAcpAgent implements Agent {
 
 		session.cancelled = false;
 		await recordUserMessage(session.cwd, session.sessionId, promptText);
-		const firstAttempt = await this.runPromptAttempt(session, promptText, false);
+		const firstAttempt = await this.runPromptAttempt(session, promptText, promptImages, false);
 
 		if (firstAttempt.stopReason === "cancelled" || session.cancelled) {
 			return { stopReason: "cancelled" };
@@ -861,7 +873,7 @@ export class CursorAcpAgent implements Agent {
 			}
 
 			if (approved === "allow_once" || approved === "allow_always") {
-				return await this.runPromptAttempt(session, promptText, true);
+				return await this.runPromptAttempt(session, promptText, promptImages, true);
 			}
 		}
 
@@ -876,8 +888,8 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	async unstable_setSessionModel(
-		params: SetSessionModelRequest,
-	): Promise<SetSessionModelResponse | void> {
+		params: LegacySetSessionModelRequest,
+	): Promise<LegacySetSessionModelResponse | void> {
 		const session = this.requireSession(params.sessionId);
 		return await this.withSessionConfigMutation(session, async () => {
 			if (session.activePrompt || session.activeRun) {
@@ -897,14 +909,18 @@ export class CursorAcpAgent implements Agent {
 		params: SetSessionConfigOptionRequest,
 	): Promise<SetSessionConfigOptionResponse> {
 		const session = this.requireSession(params.sessionId);
-		if (typeof params.value !== "string") {
+		const value =
+			params.configId === FAST_PARAM_ID && typeof params.value === "boolean"
+				? String(params.value)
+				: params.value;
+		if (typeof value !== "string") {
 			throw RequestError.invalidParams(
 				`Invalid value for config option ${params.configId}: ${String(params.value)}`,
 			);
 		}
 
 		return await this.withSessionConfigMutation(session, async () => {
-			return await this.setSessionConfigOptionLocked(session, params.configId, params.value);
+			return await this.setSessionConfigOptionLocked(session, params.configId, value);
 		});
 	}
 
@@ -1048,7 +1064,9 @@ export class CursorAcpAgent implements Agent {
 		params: Record<string, unknown>,
 	): Promise<Record<string, unknown>> {
 		if (method === "session/set_model") {
-			const response = await this.unstable_setSessionModel(params as SetSessionModelRequest);
+			const response = await this.unstable_setSessionModel(
+				params as unknown as LegacySetSessionModelRequest,
+			);
 			return (response ?? {}) as Record<string, unknown>;
 		}
 
@@ -1086,7 +1104,7 @@ export class CursorAcpAgent implements Agent {
 		preferredFastValue?: string;
 		preferredBackendSessionId?: string;
 		warmNativeBackend?: boolean;
-	}): Promise<NewSessionResponse> {
+	}): Promise<ExtendedNewSessionResponse> {
 		const modeId = params.preferredModeId ?? this.defaultModeId ?? DEFAULT_MODE_ID;
 		const configuredModelId = params.preferredModelId ?? this.defaultModelId;
 		const configuredThinkingLevel = params.preferredThinkingLevel ?? this.defaultThinkingLevel;
@@ -1100,7 +1118,7 @@ export class CursorAcpAgent implements Agent {
 			configuredModelId,
 			configuredThinkingLevel,
 			configuredFastValue,
-			lastAgentModeId: isAgentSessionMode(modeId) ? modeId : "default",
+			lastAgentModeId: isAgentSessionMode(modeId) ? modeId : "auto-review",
 			cancelled: false,
 			nativeAvailableCommands: [],
 			customSlashCommands: [],
@@ -1355,7 +1373,7 @@ export class CursorAcpAgent implements Agent {
 	private async applyNativeSessionModelsAndModes(
 		session: SessionState,
 		loaded: {
-			models?: NewSessionResponse["models"];
+			models?: LegacySessionModels;
 			modes?: NewSessionResponse["modes"];
 		},
 	): Promise<void> {
@@ -1364,10 +1382,7 @@ export class CursorAcpAgent implements Agent {
 			try {
 				listedModels = await this.runner.listModels();
 			} catch (error) {
-				this.logger.warn?.(
-					"[cursor-acp] Unable to refresh full model list from CLI",
-					error,
-				);
+				this.logger.warn?.("[cursor-acp] Unable to refresh the full model list", error);
 			}
 
 			const modelCatalog = withCliModelParameters(
@@ -1477,8 +1492,8 @@ export class CursorAcpAgent implements Agent {
 
 	private buildResumeResponse(
 		session: SessionState,
-		fallback: NewSessionResponse,
-	): ResumeSessionResponse {
+		fallback: ExtendedNewSessionResponse,
+	): ExtendedResumeSessionResponse {
 		const models = session.nativeSessionModels ?? fallback.models;
 		return {
 			models,
@@ -1606,7 +1621,7 @@ export class CursorAcpAgent implements Agent {
 
 	private buildConfigOptions(
 		session: SessionState,
-		models: NewSessionResponse["models"] = session.nativeSessionModels ??
+		models: LegacySessionModels | undefined = session.nativeSessionModels ??
 			session.fallbackSessionModels,
 	): SessionConfigOption[] {
 		const modeState = availableModes(session.modeId);
@@ -1643,18 +1658,29 @@ export class CursorAcpAgent implements Agent {
 
 			const fastParameter = getFastParameterForModel(session.modelCatalog, session.modelId);
 			if (fastParameter && session.fastValue) {
-				configOptions.push({
+				const common = {
 					id: FAST_PARAM_ID,
 					name: fastParameter.displayName ?? "Fast",
 					description: "Fast response variant for the selected model",
-					category: "_model_variant",
-					type: "select",
-					currentValue: session.fastValue,
-					options: fastParameter.values.map((value) => ({
-						value: value.value,
-						name: formatFastParameterOptionName(value.value, value.displayName),
-					})),
-				});
+					category: "model_config",
+				} as const;
+				if (this.clientCapabilities?.session?.configOptions?.boolean != null) {
+					configOptions.push({
+						...common,
+						type: "boolean",
+						currentValue: session.fastValue === "true",
+					});
+				} else {
+					configOptions.push({
+						...common,
+						type: "select",
+						currentValue: session.fastValue,
+						options: fastParameter.values.map((value) => ({
+							value: value.value,
+							name: formatFastParameterOptionName(value.value, value.displayName),
+						})),
+					});
+				}
 			}
 
 			const thinkingParameter = getThinkingParameterForModel(
@@ -1805,24 +1831,23 @@ export class CursorAcpAgent implements Agent {
 		forceRetry: boolean,
 	): {
 		modeId?: "plan" | "ask";
-		force: boolean;
-		autoReview: boolean;
+		reviewPolicy: "auto-review" | "run-everything";
 	} {
 		if (forceRetry) {
-			return { force: true, autoReview: false };
+			return { reviewPolicy: "run-everything" };
 		}
 
 		switch (session.modeId) {
 			case "plan":
-				return { modeId: "plan", force: false, autoReview: false };
+				return { modeId: "plan", reviewPolicy: "auto-review" };
 			case "ask":
-				return { modeId: "ask", force: false, autoReview: false };
+				return { modeId: "ask", reviewPolicy: "auto-review" };
 			case "yolo":
-				return { force: true, autoReview: false };
+				return { reviewPolicy: "run-everything" };
 			case "auto-review":
-				return { force: false, autoReview: true };
+				return { reviewPolicy: "auto-review" };
 			case "default":
-				return { force: false, autoReview: false };
+				return { reviewPolicy: "auto-review" };
 			default:
 				unreachable(session.modeId, this.logger);
 		}
@@ -1847,6 +1872,7 @@ export class CursorAcpAgent implements Agent {
 	private async runPromptAttempt(
 		session: SessionState,
 		promptText: string,
+		images: RunPromptOptions["images"],
 		forceRetry: boolean,
 	): Promise<PromptAttemptResult> {
 		const rejectedToolCalls: RejectedToolCall[] = [];
@@ -1860,10 +1886,14 @@ export class CursorAcpAgent implements Agent {
 			workspace: session.cwd,
 			backendSessionId: session.backendSessionId,
 			prompt: promptText,
+			images,
 			modelId: session.modelId,
 			modeId: modeSettings.modeId,
-			force: modeSettings.force,
-			autoReview: modeSettings.autoReview,
+			reviewPolicy: modeSettings.reviewPolicy,
+			modelCatalog: session.modelCatalog,
+			thinkingLevel: session.thinkingLevel,
+			fastValue: session.fastValue,
+			mcpServers: session.mcpServers,
 			onEvent: async (event) => {
 				const mapped = mapCursorEventToAcp(event, {
 					sessionId: session.sessionId,
@@ -1915,14 +1945,14 @@ export class CursorAcpAgent implements Agent {
 
 			const resultEvent = completed.resultEvent;
 			if (!resultEvent) {
-				throw RequestError.internalError(
-					undefined,
-					"Cursor CLI did not emit a result event",
-				);
+				throw RequestError.internalError(undefined, "Cursor did not emit a result event");
 			}
 
 			const subtype = typeof resultEvent.subtype === "string" ? resultEvent.subtype : "";
 			const isError = resultEvent.is_error === true;
+			if (isError && rejectedToolCalls.length > 0) {
+				return { stopReason: "end_turn", rejectedToolCalls };
+			}
 
 			if (subtype === "success" && !isError) {
 				if (assistantTextChunks.length > 0) {
@@ -1951,7 +1981,7 @@ export class CursorAcpAgent implements Agent {
 
 			const resultText =
 				typeof resultEvent.result === "string" ? resultEvent.result : subtype;
-			throw RequestError.internalError(undefined, resultText || "Cursor CLI failed");
+			throw RequestError.internalError(undefined, resultText || "Cursor failed");
 		} catch (error) {
 			session.activeRun = undefined;
 			if (session.cancelled) {

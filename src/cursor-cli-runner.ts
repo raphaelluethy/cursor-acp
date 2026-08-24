@@ -1,48 +1,26 @@
 import { ChildProcessByStdio, spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { getDefaultCursorAgentCommand } from "./cursor-agent-command.js";
+import type {
+	CursorPromptRun,
+	CursorRunner,
+	CursorStreamEvent,
+	RunPromptOptions,
+	RunPromptResult,
+} from "./cursor-runner.js";
 import { normalizeModelId } from "./model-id.js";
 import { CursorModelDescriptor, parseModelListOutput } from "./slash-commands.js";
 import { Logger, stripAnsi } from "./utils.js";
 
 type Environment = Record<string, string | undefined>;
 
-export interface CursorStreamEvent {
-	type: string;
-	subtype?: string;
-	[key: string]: unknown;
-}
-
-export interface RunPromptOptions {
-	workspace: string;
-	prompt: string;
-	backendSessionId?: string;
-	modelId?: string;
-	modeId?: "plan" | "ask";
-	force?: boolean;
-	autoReview?: boolean;
-	streamPartialOutput?: boolean;
-	env?: Environment;
-	onEvent?: (event: CursorStreamEvent) => Promise<void> | void;
-}
-
-export interface RunPromptResult {
-	events: CursorStreamEvent[];
-	resultEvent?: CursorStreamEvent;
-	stderr: string;
-	exitCode: number;
-}
-
-export interface CursorPromptRun {
-	completed: Promise<RunPromptResult>;
-	cancel: () => void;
-}
-
-export interface CursorCliRunnerLike {
-	listModels(): Promise<CursorModelDescriptor[]>;
-	createChat(): Promise<string>;
-	startPrompt(options: RunPromptOptions): CursorPromptRun;
-}
+export type CursorCliRunnerLike = CursorRunner;
+export type {
+	CursorPromptRun,
+	CursorStreamEvent,
+	RunPromptOptions,
+	RunPromptResult,
+} from "./cursor-runner.js";
 
 async function runCommand(
 	command: string,
@@ -93,7 +71,7 @@ async function runCommand(
 	});
 }
 
-export class CursorCliRunner implements CursorCliRunnerLike {
+export class CursorCliRunner implements CursorRunner {
 	constructor(
 		private readonly command: string = getDefaultCursorAgentCommand(),
 		private readonly logger: Logger = console,
@@ -144,9 +122,9 @@ export class CursorCliRunner implements CursorCliRunnerLike {
 			args.push("--mode", options.modeId);
 		}
 
-		if (options.force) {
+		if (options.reviewPolicy === "run-everything") {
 			args.push("--force");
-		} else if (options.autoReview) {
+		} else if (options.reviewPolicy === "auto-review") {
 			args.push("--auto-review");
 		}
 

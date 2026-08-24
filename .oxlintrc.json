@@ -1,22 +1,15 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": [
-    "import",
     "typescript",
     "unicorn",
-    "react",
-    "jsdoc",
-    "node",
-    "promise",
-    "vitest",
-    "jest",
-    "jsx-a11y"
+    "oxc"
   ],
-  "rules": {
-    "eqeqeq": "error",
-    "no-var": "error",
-    "prefer-const": "error",
-    "curly": "error"
+  "categories": {
+    "correctness": "error"
   },
-  "ignorePatterns": ["node_modules/**", "dist/**", "coverage/**", "*.min.js"]
+  "rules": {},
+  "env": {
+    "builtin": true
+  }
 }

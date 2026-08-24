@@ -1,14 +1,16 @@
 export const ADAPTER_NAME = "cursor-acp";
 
-export const ADVERTISED_MODE_IDS = ["default", "auto-review", "yolo", "ask", "plan"] as const;
+export const ADVERTISED_MODE_IDS = ["auto-review", "yolo", "ask", "plan"] as const;
 
 export const LEGACY_MODE_ALIASES = {
-	acceptEdits: "default",
-	agent: "default",
+	default: "auto-review",
+	acceptEdits: "auto-review",
+	agent: "auto-review",
 	autoReview: "auto-review",
 } as const;
 
-export type SessionModeId = (typeof ADVERTISED_MODE_IDS)[number];
+type AdvertisedModeId = (typeof ADVERTISED_MODE_IDS)[number];
+export type SessionModeId = "default" | AdvertisedModeId;
 
 export type AgentSessionModeId = Extract<SessionModeId, "default" | "auto-review" | "yolo">;
 
@@ -16,7 +18,7 @@ export function isAgentSessionMode(modeId: SessionModeId): modeId is AgentSessio
 	return modeId === "default" || modeId === "auto-review" || modeId === "yolo";
 }
 
-export const DEFAULT_MODE_ID: SessionModeId = "default";
+export const DEFAULT_MODE_ID: SessionModeId = "auto-review";
 
 export function getEnvDefaultMode(): SessionModeId | undefined {
 	const raw = process.env.CURSOR_ACP_DEFAULT_MODE;
@@ -46,8 +48,8 @@ export function getEnvDefaultThinking(): string | undefined {
 }
 
 export function normalizeModeId(value: string): SessionModeId | null {
-	if (ADVERTISED_MODE_IDS.includes(value as SessionModeId)) {
-		return value as SessionModeId;
+	if (ADVERTISED_MODE_IDS.includes(value as AdvertisedModeId)) {
+		return value as AdvertisedModeId;
 	}
 
 	if (value in LEGACY_MODE_ALIASES) {
@@ -61,7 +63,7 @@ export function normalizeModeId(value: string): SessionModeId | null {
 export function modeDisplayName(modeId: SessionModeId): string {
 	switch (modeId) {
 		case "default":
-			return "Default";
+			return "Default (Auto-review)";
 		case "auto-review":
 			return "Auto-review";
 		case "yolo":
@@ -78,20 +80,15 @@ export function availableModes(currentModeId: SessionModeId) {
 		currentModeId,
 		availableModes: [
 			{
-				id: "default",
-				name: "Default",
-				description: "Standard agent mode with client-mediated permission prompts",
-			},
-			{
 				id: "auto-review",
 				name: "Auto-review",
 				description:
-					"Smart Auto: Cursor's classifier auto-runs safe tool calls and prompts the client for the rest",
+					"Cursor Smart Auto Review runs approved tool calls and fails closed on the rest",
 			},
 			{
 				id: "yolo",
 				name: "Yolo",
-				description: "Agent mode with automatic approval for native permission requests",
+				description: "Run local tool calls without Auto Review",
 			},
 			{
 				id: "ask",

@@ -4,78 +4,65 @@
 
 Disclaimer: I am not affiliated with Cursor or Zed. This project is a personal experiment and should not be considered an official product of either company. I am a big fan of both products and wanted to combine what I like with both of them: An amazing editor and a great AI coding agent (and composer-1, holy this model flies xD).
 
-An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) adapter for [Cursor](https://cursor.com) Agent CLI, enabling Cursor's AI coding assistant to be used within [Zed](https://zed.dev) and other ACP-compatible clients.
+An [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) adapter for the [Cursor SDK](https://cursor.com/docs/sdk/typescript), enabling Cursor's coding agent in [Zed](https://zed.dev) and other ACP-compatible clients.
 
 ## About
 
-This is an `ai-assisted` personal project aimed at bringing Cursor's agent into Zed. It uses a hybrid approach: native `cursor-agent acp` where that helps ACP/session compatibility, and the legacy `cursor-agent --print --output-format stream-json` prompt path where that preserves richer tool-call details in clients.
+This is an `ai-assisted` personal project aimed at bringing Cursor's agent into Zed. Prompt execution uses `@cursor/sdk`; the adapter adds ACP session persistence, history replay, model and mode controls, and Zed-friendly configuration options.
 
 **Based on [claude-code-acp](https://github.com/zed-industries/claude-code-acp)** by Zed Industries - the original ACP adapter for Claude Code that served as the architectural foundation for this project.
 
 ## Features
 
-### Hybrid backend
+### Cursor SDK backend
 
-- **Command-preserving prompt execution**: Uses the legacy `cursor-agent --print --output-format stream-json` prompt path so shell tool calls keep the exact command text (`pwd`, `npm test`, etc.) in ACP clients
-- **Native ACP compatibility layer**: Keeps native `cursor-agent acp` for ACP/session compatibility work where the native backend is still useful
-- **Tool and message streaming**: Uses the stream-json mapper for prompt turns and still forwards native ACP `session/update` notifications where applicable
-- **Cursor extension RPCs**: Forwards native `cursor/*` extension methods and notifications (e.g. `cursor/ask_question`, `cursor/update_todos`) to the outer ACP client when supported
-- **Cursor commands and skills**: Relies on native ACP `available_commands_update` for Cursor/user commands and skills
-- **Native command precedence**: When Cursor advertises a slash command, the adapter forwards that command to native ACP instead of intercepting it locally
-- **Mode switching**: Maps wrapper modes to native `agent`, `ask`, and `plan`
-- **Auto-review mode** (`auto-review`): Passes Cursor CLI `--auto-review` (Smart Auto). Safe tool calls auto-run; remaining denials are surfaced to the ACP client. Distinct from **Yolo**, which auto-approves everything.
+- **Smart Auto Review by default**: New sessions create local SDK agents with `local.autoReview: true`. Cursor's classifier runs approved calls and fails closed on the rest.
+- **ACP permission fallback**: A call stopped by Auto Review is surfaced to the client. “Allow once” retries that turn with Auto Review disabled; “Always allow” switches the session to Yolo.
+- **Correct SDK mode lifecycle**: Auto Review is an agent-level SDK option. Switching review policy closes and resumes the same SDK agent with the new policy; the SDK's unrelated crash-recovery `force` flag is never used as an approval bypass.
+- **Model parameters**: Canonical SDK model IDs, thinking levels, fast values, and variants flow into SDK model selections.
+- **MCP and images**: ACP-provided stdio/HTTP/SSE MCP servers and image chunks are forwarded to the SDK.
+- **Agent, Plan, and Ask**: Plan uses the SDK's `plan` send mode. Ask creates a no-tools SDK agent.
 
 ### Wrapper compatibility
 
 - **ACP session lifecycle**: Supports `new`, `resume`, and `fork` (best-effort) session operations
 - **Session persistence & history replay**: Stores visible history locally and replays it on resume/load
 - **Session listing**: Lists past local sessions with optional cwd filtering and pagination
-- **Model listing and best-effort model selection**: Keeps `/model` support while native ACP has no stable model API
-- **Fast and thinking controls**: Derives ACP `fast` and `thinking` config options from Cursor CLI model variants and maps selections back to concrete CLI model ids
-- **Authentication helpers**: `/login`, `/logout`, `/status`, plus terminal-auth metadata for ACP clients that support it
-- **Prompt flattening for ACP clients**: Keeps embedded context and image prompts working by converting them to text before forwarding to native ACP
-- **Optional Yolo mode** (`yolo`): Auto-approves native ACP permission requests when explicitly selected
-- **Turn closing summary**: Collects assistant text from all native `agent_message_chunk` shapes we can decode; if a turn ends with tools but no streamed assistant text, emits a Composer-style markdown recap (per-file bullets plus recent shell output) so the client can show a final message block
+- **Model listing and selection**: `/model` and ACP config options use the SDK catalog.
+- **ACP 1.4 controls**: Clients that advertise boolean config support render Fast as a toggle; older clients receive a select fallback. Thinking remains a model-specific selector.
+- **SDK authentication**: `/login`, `/logout`, `/status`, `CURSOR_API_KEY`, and ACP terminal authentication use Cursor SDK credentials. Browser login is stored under `~/.cursor/sdk/auth.json`.
+- **Optional Yolo mode** (`yolo`): Disables Auto Review for unrestricted local SDK execution.
 
 ### Known limitations
 
-- Native Cursor ACP on the currently validated CLI does **not** expose `session/list`, `session/resume`, or `session/set_model`
-- Resuming after restarting `cursor-acp` uses native `session/load` when a stored `backendSessionId` is available; if that fails, the adapter starts a **new** native session and replays local JSONL so visible history is preserved
-- Prompt execution intentionally stays on the legacy stream-json runner because current native execute-tool updates do not include the original command string
-- `debug` mode is intentionally not exposed in this phase
+- Cursor SDK authentication is separate from `cursor-agent` CLI authentication. Run `/login`, `cursor-acp login`, or set `CURSOR_API_KEY`.
+- The SDK exposes no interactive per-tool approval callback. ACP approval therefore retries the complete turn without Auto Review; work completed before the blocked call may be repeated.
+- Auto Review reduces confirmation noise but is not a security boundary. Use sandboxing and normal least-privilege practices for untrusted workspaces.
+- `debug` mode is not exposed.
 
-## Breaking changes (hybrid backend & Yolo)
+## Breaking changes (SDK backend and Auto Review default)
 
-Recent `cursor-acp` versions changed backend strategy more than once. The current release is hybrid: prompt execution uses the legacy **`cursor-agent --print --output-format stream-json`** path again so commands render correctly, while native `cursor-agent acp` is still used for compatibility/session features where it helps.
+Version 0.9.0 moves prompt turns to `@cursor/sdk` instead of `cursor-agent --print`. SDK authentication is separate from Cursor CLI authentication, and **Auto Review is the shipped default for new sessions**.
 
 ### Configuration defaults
 
-Prefer ACP client defaults, such as Zed’s inline `default_mode`, `default_model`, `default_fast`, and `default_thinking` fields on the custom agent entry. The adapter still reads `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING` as fallback values when the client does not send defaults.
+Use ACP `default_config_options` with Zed versions that support ACP config defaults. The adapter still accepts legacy inline defaults and reads `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING` as fallbacks.
 
 ### Legacy Yolo mode name aliases removed
 
 Older builds accepted `bypassPermissions` and `autoRunAllCommands` as synonyms for **`yolo`** in `default_mode` and in `/mode`. Those names are **no longer accepted**—use **`yolo`** (or pick **Yolo** in the client).
 
-### Hybrid backend
-
-- **Execution model**: Prompt turns run through the legacy stream-json CLI path, while session compatibility features still use native `cursor-agent acp` where useful.
-- **Why this changed**: Current Cursor native ACP execute-tool updates collapse shell commands to a generic `Terminal` tool call with no original command string. The legacy stream-json path preserves `shellToolCall.args.command`, which lets ACP clients render the true command.
-- **Slash commands**: If Cursor advertises a command name that matches a built-in wrapper command (for example `/model`), the **native command wins** and is forwarded to the backend; the wrapper no longer always intercepts those names.
-- **Permissions**: Prompt-time tool visibility now comes from the stream-json path, while wrapper mode handling still controls retries and Yolo behavior.
-- **Resume / listing**: Resume still uses native **`session/load`** when a stored backend session id is available; native Cursor ACP still does not expose everything the outer protocol can represent (see **Known limitations**).
-
 ### Auto-review mode (`auto-review`)
 
-- **What it is**: Cursor CLI **Auto-review (Smart Auto)** — a server classifier auto-runs safe tool calls and asks for the rest. Enable it with ACP mode id **`auto-review`** (Zed `default_mode`, `/mode auto-review`, or the mode picker). The adapter passes `--auto-review` on the stream-json prompt path.
-- **What it is not**: Not Yolo (`--force` / auto-approve everything). Not Bugbot / PR review. Not cloud `skipReviewerRequest`.
-- **Remaining prompts**: Calls the classifier blocks are still offered to your ACP client (same retry/permission channel as Default). Choosing “always allow” still upgrades the session to Yolo.
-- **Native `agent acp`**: Cursor’s native ACP server does not expose an Auto-review session mode (`agent` / `ask` / `plan` only). `agent acp --help` has no `--auto-review` flag. This adapter therefore does **not** rely on native ACP for Auto-review.
+- **What it is**: Cursor SDK Smart Auto Review, enabled with `local.autoReview: true` on local agents.
+- **Default**: The adapter starts in `auto-review` unless the client or environment explicitly chooses another mode. Legacy `default` values normalize to `auto-review`.
+- **Remaining prompts**: Calls the classifier stops are offered to the ACP client. Choosing “Always allow” upgrades the session to Yolo.
+- **What it is not**: Not Yolo, Bugbot/PR review, or a sandbox/security boundary.
 
 ### Yolo mode (`yolo`)
 
-- **What it does now**: **Yolo** only changes how the adapter answers **native ACP permission requests**—it auto-selects an allow-style option (preferring `allow_always`, then `allow_once`, then another allow). It does **not** introduce a separate native Cursor mode: **Default**, **Auto-review**, and **Yolo** all map to native **`agent`**. Yolo auto-approves remaining permissions; Auto-review passes `--auto-review` and still surfaces leftover prompts.
-- **Why that can break expectations**: If you relied on the old wrapper’s auto-approval semantics (or on names like `bypassPermissions` / `autoRunAllCommands`) as identical to “unrestricted agent” in the legacy path, behavior may differ because approvals are now tied to **native permission options** and to the **ACP permission** channel.
-- **Configuration**: Set `default_mode` to **`yolo`** in your ACP client configuration (for example the Zed custom agent entry) to get automatic approval. Do not use legacy names like `bypassPermissions` or `autoRunAllCommands`; see **Legacy Yolo mode name aliases removed**.
+- **What it does**: Creates/resumes the local SDK agent with Auto Review disabled. This is the SDK's headless “run everything” behavior.
+- **Configuration**: Set `default_config_options.mode` to `yolo` or choose Yolo in the mode picker. Do not use removed aliases such as `bypassPermissions` or `autoRunAllCommands`.
 
 The same notice is linked from [`docs/breaking-changes.md`](docs/breaking-changes.md).
 
@@ -90,14 +77,13 @@ The same notice is linked from [`docs/breaking-changes.md`](docs/breaking-change
 | `/login`  | Authenticate with Cursor               |
 | `/logout` | Sign out of Cursor                     |
 
-Other Cursor commands and skills are forwarded from native `cursor-agent acp` via `available_commands_update`.
-If a native Cursor command collides with one of the wrapper commands above, the native command takes precedence.
+Project and user slash commands/skills discovered by the adapter are added to the ACP command list.
 
 ## Installation
 
 ```bash
-bun install
-bun run build
+nub install
+nub run build
 ```
 
 This compiles the project and produces the `cursor-acp` binary entry point at `./dist/index.js`.
@@ -133,7 +119,7 @@ which cursor-acp
 ### Run directly
 
 ```bash
-bun run start
+nub run start
 ```
 
 Or use the binary:
@@ -141,6 +127,16 @@ Or use the binary:
 ```bash
 cursor-acp
 ```
+
+### Authenticate
+
+Authenticate the Cursor SDK in a browser before starting a session:
+
+```bash
+cursor-acp login
+```
+
+Run `cursor-acp logout` to remove the stored SDK credential. If `CURSOR_API_KEY` is set, it remains active until removed from the adapter process environment.
 
 ### Configuring Zed
 
@@ -153,7 +149,10 @@ Open your Zed settings file via the Command Palette (`zed: open settings`) and a
       "type": "custom",
       "command": "cursor-acp",
       "args": [],
-      "default_mode": "yolo"
+      "default_config_options": {
+        "mode": "auto-review",
+        "fast": false
+      }
     }
   }
 }
@@ -168,15 +167,18 @@ If `cursor-acp` is not on your PATH, use the full absolute path to the entry poi
       "type": "custom",
       "command": "/absolute/path/to/cursor-acp/dist/index.js",
       "args": [],
-      "default_mode": "yolo"
+      "default_config_options": {
+        "mode": "auto-review",
+        "fast": false
+      }
     }
   }
 }
 ```
 
-#### Default mode, model, fast, and thinking
+#### Default mode, model, Fast, and Thinking
 
-Zed can pass the initial mode, model, fast flag, and thinking level through the ACP `session/new` request. Put them directly on the custom agent entry:
+Zed versions with ACP config defaults pass initial controls through `default_config_options`. When the client also advertises boolean config support, Fast appears as a native toggle in the agent panel:
 
 ```json
 {
@@ -185,30 +187,32 @@ Zed can pass the initial mode, model, fast flag, and thinking level through the 
       "type": "custom",
       "command": "cursor-acp",
       "args": [],
-      "default_mode": "yolo",
-      "default_model": "gpt-5.4-mini-medium",
-      "default_fast": "true",
-      "default_thinking": "high"
+      "default_config_options": {
+        "mode": "auto-review",
+        "model": "composer-2.5",
+        "fast": false,
+        "thinking": "high"
+      }
     }
   }
 }
 ```
 
-- `default_mode` — one of `default`, `auto-review`, `yolo`, `plan`, or `ask` (legacy aliases: `acceptEdits` / `agent` → `default`; `autoReview` → `auto-review`)
-- `default_model` — optional model ID forwarded from the ACP client when supported
-- `default_fast` — optional fast variant selection (`true` or `false`) when the selected model has a matching Cursor CLI fast variant
-- `default_thinking` — optional thinking/reasoning selection, for example `none`, `low`, `medium`, `high`, `xhigh`, `max`, `true`, or `false`, depending on the selected model variants
+- `mode` — one of `auto-review`, `yolo`, `plan`, or `ask`. Omit it to use the shipped `auto-review` default; legacy `default` values still work as an alias.
+- `model` — optional canonical model ID from the Cursor SDK catalog.
+- `fast` — boolean toggle when the selected model advertises a `fast` parameter.
+- `thinking` — model-specific reasoning value such as `none`, `low`, `medium`, `high`, `xhigh`, or `max`.
 
-Omit keys you do not need. There is no separate adapter-specific config file for these defaults anymore. As a fallback, `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING` can be set in the adapter process environment.
+Legacy Zed fields (`default_mode`, `default_model`, `default_fast`, and `default_thinking`) remain accepted for compatibility. There is no adapter-specific config file. Environment fallbacks are `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING`.
 
-The mode picker in Zed (and other ACP clients) lists **Default**, **Auto-review**, **Yolo**, **Ask**, and **Plan**. **Auto-review** and **Yolo** are implemented in this adapter: Cursor’s native session still uses its usual Agent/Plan/Ask wiring under the hood. Auto-review maps to CLI `--auto-review`; Yolo maps to `--force` plus adapter-side auto-approval of native permission requests. Model-specific **Fast** and **Thinking** controls appear when the selected Cursor CLI model has compatible variants.
+The mode picker lists **Auto-review**, **Yolo**, **Ask**, and **Plan**. Model-specific **Fast** and **Thinking** controls appear when the SDK catalog advertises those parameters. Clients that advertise boolean config support receive Fast as a toggle; other clients receive an On/Off select.
 
 ### Using in Zed
 
 1. Open the Agent Panel with `Cmd+?` (macOS) or `Ctrl+?` (Linux)
 2. Click the `+` button in the top right and select **Cursor**
-3. On first use, run the `/login` slash command to authenticate with Cursor
-4. The default mode is `default`; if you want Cursor’s classifier to auto-run safe tools and prompt for the rest, set `"default_mode": "auto-review"`. For unrestricted auto-approval, use `"default_mode": "yolo"`.
+3. On first use, select the Cursor SDK login method or run `/login`
+4. Auto Review is already the default. Choose **Yolo** only when you explicitly want unrestricted local tool execution.
 
 You can also bind a keyboard shortcut to quickly open a new Cursor thread by adding the following to your `keymap.json` (open via `zed: open keymap file`):
 
@@ -231,32 +235,35 @@ Set `CURSOR_ACP_DEBUG_LOG=1` if you also want the adapter to write extra debug t
 ### Development
 
 ```bash
-bun run dev
+nub run dev
 ```
 
 ### Testing
 
 ```bash
-bun run test           # Run tests in watch mode
-bun run test:run       # Run tests once
+nub run test           # Run tests in watch mode
+nub run test:run       # Run tests once
 ```
 
 ### Linting & Formatting
 
 ```bash
-bun run lint        # Check for linting issues
-bun run lint:fix    # Auto-fix linting issues
-bun run format      # Format code with oxfmt
-bun run check       # Run lint and format checks
+nub run lint          # Check with Oxlint
+nub run lint:fix      # Apply safe Oxlint fixes
+nub run format        # Format with Oxfmt
+nub run format:check  # Verify formatting without writing files
+nub run check         # Run lint and format checks
 ```
+
+Oxlint and Oxfmt use their repository-level configurations. Source indentation uses tabs rendered at a width of four spaces, as configured in `.oxfmtrc.json` and `.editorconfig`.
 
 ## Migration Notes
 
-- See **Breaking changes (native ACP & Yolo)** for semantic and protocol differences when upgrading from the legacy stream-json wrapper.
-- `default`, `auto-review`, `yolo`, `ask`, and `plan` are the advertised modes
-- `acceptEdits` is a deprecated alias for `default` (still accepted). `autoReview` is accepted as an alias for **`auto-review`**. For Yolo, use **`yolo`**—`bypassPermissions` and `autoRunAllCommands` are no longer accepted (see **Legacy Yolo mode name aliases removed**)
+- See **Breaking changes (SDK backend and Auto Review default)** when upgrading from the CLI-backed adapter.
+- `auto-review`, `yolo`, `ask`, and `plan` are the advertised modes
+- `default`, `acceptEdits`, `agent`, and `autoReview` are accepted as compatibility aliases for **`auto-review`**. For Yolo, use **`yolo`**—`bypassPermissions` and `autoRunAllCommands` are no longer accepted (see **Legacy Yolo mode name aliases removed**)
 - `debug` is not exposed
-- Custom commands and skills are forwarded from native `cursor-agent acp`
+- SDK user settings are loaded from Cursor's user setting source.
 
 ## Project Structure
 
@@ -264,23 +271,23 @@ bun run check       # Run lint and format checks
 src/
 ├── index.ts              # CLI entry point
 ├── lib.ts                # Library exports
-├── cursor-acp-agent.ts   # Outer ACP agent + compatibility layer
-├── cursor-native-acp-client.ts # Native `cursor-agent acp` bridge
-├── cursor-cli-runner.ts  # Cursor CLI helpers (model listing)
-├── prompt-conversion.ts  # Flattens ACP prompts for native ACP forwarding
-├── auth.ts               # Authentication handling
+├── cursor-acp-agent.ts   # ACP lifecycle, persistence, and permissions
+├── cursor-runner.ts      # Prompt execution interface
+├── cursor-sdk-runner.ts  # Cursor SDK implementation
+├── cursor-sdk-event-adapter.ts # SDK-to-ACP event compatibility
+├── prompt-conversion.ts  # ACP text, context, and image conversion
+├── auth.ts               # Cursor SDK authentication
 ├── settings.ts           # Mode ids and normalization helpers
 ├── session-storage.ts    # Session persistence and history replay
 ├── slash-commands.ts     # Slash command handlers
 ├── tools.ts              # Tool definitions
-├── native-assistant-stream.ts # Assistant chunk parsing + end-of-turn recap
 ├── utils.ts              # Utility functions
 └── tests/                # Test files
 ```
 
 ## Configuration
 
-The adapter now uses `cursor-agent acp` as its session compatibility backend and keeps local compatibility logic for resume/list/model behavior that native ACP does not currently expose.
+The adapter uses local Cursor SDK agents and keeps wrapper-level compatibility logic for ACP resume, list, and visible-history replay.
 
 ### Session Storage
 
@@ -289,9 +296,8 @@ Sessions are persisted under `~/.cursor-acp/sessions/` (or `$CURSOR_ACP_CONFIG_D
 ## Requirements
 
 - [Zed](https://zed.dev)
-- Node.js 25.6.1+
-- [Bun](https://bun.sh) (for package management and scripts)
-- Cursor CLI installed and available in PATH
+- Node.js 22.13+ (required by the SDK's default local SQLite store)
+- [Nub](https://nubjs.com/docs) (for package management and scripts)
 - Valid Cursor subscription
 
 ## Acknowledgments

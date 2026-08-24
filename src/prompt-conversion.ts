@@ -1,4 +1,5 @@
 import { PromptRequest } from "@agentclientprotocol/sdk";
+import type { SDKImage } from "@cursor/sdk";
 
 function basenameFromUri(uri: string): string {
 	try {
@@ -72,6 +73,22 @@ export function promptToCursorText(prompt: PromptRequest): string {
 	}
 
 	return lines.join("\n\n").trim();
+}
+
+/** Preserve ACP image chunks for the SDK instead of reducing them to prompt text. */
+export function promptToCursorImages(prompt: PromptRequest): SDKImage[] {
+	return prompt.prompt.flatMap((chunk): SDKImage[] => {
+		if (chunk.type !== "image") {
+			return [];
+		}
+		if (chunk.uri) {
+			return [{ url: chunk.uri }];
+		}
+		if (chunk.data) {
+			return [{ data: chunk.data, mimeType: chunk.mimeType || "application/octet-stream" }];
+		}
+		return [];
+	});
 }
 
 export type ParsedSlashCommand =

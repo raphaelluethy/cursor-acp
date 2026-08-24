@@ -1,12 +1,13 @@
 # Breaking changes
 
-The up-to-date notice for upgrades involving the current **hybrid backend** and **Yolo** (`yolo`) mode lives in the main project README:
+The up-to-date v0.9.0 notice for upgrades involving the **Cursor SDK backend**, the **Auto Review default**, and **Yolo** (`yolo`) mode lives in the main project README:
 
-**[Breaking changes (hybrid backend & Yolo)](../README.md#breaking-changes-hybrid-backend--yolo)**
+**[Breaking changes (SDK backend and Auto Review default)](../README.md#breaking-changes-sdk-backend-and-auto-review-default)**
 
 That section covers:
 
-- the return to the legacy **`cursor-agent --print --output-format stream-json`** prompt path for accurate shell command display
-- continued use of native **`cursor-agent acp`** for session compatibility features
-- fallback handling for `CURSOR_ACP_DEFAULT_MODE` / `CURSOR_ACP_DEFAULT_MODEL`
+- migration of production prompt execution and authentication to `@cursor/sdk`
+- shipping SDK Smart Auto Review as the default for new sessions
+- ACP `default_config_options`, parameterized models, and the boolean Fast toggle
+- fallback handling for `CURSOR_ACP_DEFAULT_MODE` / `CURSOR_ACP_DEFAULT_MODEL` / `CURSOR_ACP_DEFAULT_THINKING`
 - removal of legacy Yolo aliases like `bypassPermissions` / `autoRunAllCommands`
