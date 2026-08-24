@@ -1,6 +1,6 @@
 {
   "name": "@raphael/cursor-acp",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "ACP adapter backed by the Cursor SDK",
   "main": "dist/lib.js",
   "types": "dist/lib.d.ts",
