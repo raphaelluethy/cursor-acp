@@ -19,7 +19,7 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - **Smart Auto Review by default**: New sessions create local SDK agents with `local.autoReview: true`. Cursor's classifier runs approved calls and fails closed on the rest.
 - **ACP permission fallback**: A call stopped by Auto Review is surfaced to the client. “Allow once” retries that turn with Auto Review disabled; “Always allow” switches the session to Yolo.
 - **Correct SDK mode lifecycle**: Auto Review is an agent-level SDK option. Switching review policy closes and resumes the same SDK agent with the new policy; the SDK's unrelated crash-recovery `force` flag is never used as an approval bypass.
-- **Model parameters**: Canonical SDK model IDs, thinking levels, fast values, and variants flow into SDK model selections.
+- **Model parameters**: Canonical SDK model IDs, thinking/reasoning/effort levels, fast values, and variants flow into SDK model selections. The adapter keeps the catalog's original parameter ids.
 - **MCP and images**: ACP-provided stdio/HTTP/SSE MCP servers and image chunks are forwarded to the SDK.
 - **Agent, Plan, and Ask**: Plan uses the SDK's `plan` send mode. Ask creates a no-tools SDK agent.
 
@@ -29,9 +29,10 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - **Session persistence & history replay**: Stores visible history locally and replays it on resume/load
 - **Session listing**: Lists past local sessions with optional cwd filtering and pagination
 - **Model listing and selection**: `/model` and ACP config options use the SDK catalog.
-- **ACP 1.4 controls**: Clients that advertise boolean config support render Fast as a toggle; older clients receive a select fallback. Thinking remains a model-specific selector.
+- **ACP 1.4 controls**: Clients that advertise boolean config support render Fast as a toggle; older clients receive a select fallback. Thinking remains a model-specific selector that maps SDK `thinking`, `reasoning`, or `effort` parameters. After `session/set_config_option`, the adapter sends `config_option_update` so dependent Fast and Thinking controls appear immediately.
 - **SDK authentication**: `/login`, `/logout`, `/status`, `CURSOR_API_KEY`, and ACP terminal authentication use Cursor SDK credentials. Browser login is stored under `~/.cursor/sdk/auth.json`.
 - **Optional Yolo mode** (`yolo`): Disables Auto Review for unrestricted local SDK execution.
+- **Commit and PR attribution**: Honors Cursor's global `cli-config.json` attribution flags. Project `.cursor/cli.json` does not override them.
 
 ### Known limitations
 
@@ -47,21 +48,6 @@ Version 0.9.0 moves prompt turns to `@cursor/sdk` instead of `cursor-agent --pri
 ### Configuration defaults
 
 Use ACP `default_config_options` with Zed versions that support ACP config defaults. The adapter still accepts legacy inline defaults and reads `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING` as fallbacks.
-
-### Commit and PR attribution
-
-cursor-acp honors Cursor's [global CLI attribution settings](https://cursor.com/docs/cli/reference/configuration#optional-fields). To disable both commit trailers and PR attribution, put this in `~/.cursor/cli-config.json` (or `$CURSOR_CONFIG_DIR/cli-config.json`):
-
-```json
-{
-  "attribution": {
-    "attributeCommitsToAgent": false,
-    "attributePRsToAgent": false
-  }
-}
-```
-
-Attribution is global-only; Cursor project `.cursor/cli.json` files support permissions, not attribution. The pinned SDK currently needs a guarded install-time compatibility patch for these two settings, so dependency installation fails instead of silently ignoring them if Cursor changes the relevant runtime code.
 
 ### Legacy Yolo mode name aliases removed
 
@@ -101,7 +87,7 @@ nub install
 nub run build
 ```
 
-This compiles the project and produces the `cursor-acp` binary entry point at `./dist/index.js`.
+This compiles the project and produces the `cursor-acp` binary entry point at `./dist/index.js`. `nub install` also runs a guarded postinstall patch so the pinned `@cursor/sdk` honors global commit and PR attribution settings. If Cursor changes that runtime code, installation fails instead of silently ignoring the settings.
 
 ### Adding to PATH
 
@@ -193,7 +179,7 @@ If `cursor-acp` is not on your PATH, use the full absolute path to the entry poi
 
 #### Default mode, model, Fast, and Thinking
 
-Zed versions with ACP config defaults pass initial controls through `default_config_options`. When the client also advertises boolean config support, Fast appears as a native toggle in the agent panel:
+Zed versions with ACP config defaults apply initial controls from `default_config_options`; they may send these as follow-up `session/set_config_option` requests after creating the session. The adapter then sends a `config_option_update` so dependent Fast and Thinking controls appear immediately. When the client also advertises boolean config support, Fast appears as a native toggle in the agent panel:
 
 ```json
 {
@@ -216,11 +202,11 @@ Zed versions with ACP config defaults pass initial controls through `default_con
 - `mode` — one of `auto-review`, `yolo`, `plan`, or `ask`. Omit it to use the shipped `auto-review` default; legacy `default` values still work as an alias.
 - `model` — optional canonical model ID from the Cursor SDK catalog.
 - `fast` — boolean toggle when the selected model advertises a `fast` parameter.
-- `thinking` — model-specific reasoning value such as `none`, `low`, `medium`, `high`, `xhigh`, or `max`.
+- `thinking` — ACP config id for the selected model's `thinking`, `reasoning`, or `effort` parameter. Values and the picker label come from the SDK catalog (for example `none` / `low` / `medium` / `high` / `xhigh` / `max`, or Effort `low` / `high`).
 
 Legacy Zed fields (`default_mode`, `default_model`, `default_fast`, and `default_thinking`) remain accepted for compatibility. There is no adapter-specific config file. Environment fallbacks are `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING`.
 
-The mode picker lists **Auto-review**, **Yolo**, **Ask**, and **Plan**. Model-specific **Fast** and **Thinking** controls appear when the SDK catalog advertises those parameters. Clients that advertise boolean config support receive Fast as a toggle; other clients receive an On/Off select.
+The mode picker lists **Auto-review**, **Yolo**, **Ask**, and **Plan**. Model-specific **Fast** and **Thinking** controls appear when the SDK catalog advertises `fast`, `thinking`, `reasoning`, or `effort` parameters. The ACP config id stays `thinking` even when the SDK parameter is `reasoning` or `effort`; the picker label follows the catalog (for example **Effort**). Clients that advertise boolean config support receive Fast as a toggle; other clients receive an On/Off select.
 
 ### Using in Zed
 
@@ -275,6 +261,7 @@ Oxlint and Oxfmt use their repository-level configurations. Source indentation u
 ## Migration Notes
 
 - See **Breaking changes (SDK backend and Auto Review default)** when upgrading from the CLI-backed adapter.
+- Commit and PR attribution is read only from the global Cursor CLI config; project `.cursor/cli.json` attribution is ignored.
 - `auto-review`, `yolo`, `ask`, and `plan` are the advertised modes
 - `default`, `acceptEdits`, `agent`, and `autoReview` are accepted as compatibility aliases for **`auto-review`**. For Yolo, use **`yolo`**—`bypassPermissions` and `autoRunAllCommands` are no longer accepted (see **Legacy Yolo mode name aliases removed**)
 - `debug` is not exposed
@@ -289,6 +276,8 @@ src/
 ├── cursor-acp-agent.ts   # ACP lifecycle, persistence, and permissions
 ├── cursor-runner.ts      # Prompt execution interface
 ├── cursor-sdk-runner.ts  # Cursor SDK implementation
+├── model-id.ts           # SDK model ids, thinking/reasoning/effort, and fast variants
+├── cursor-cli-config.ts  # Global CLI attribution and config paths
 ├── cursor-sdk-event-adapter.ts # SDK-to-ACP event compatibility
 ├── prompt-conversion.ts  # ACP text, context, and image conversion
 ├── auth.ts               # Cursor SDK authentication
@@ -298,11 +287,28 @@ src/
 ├── tools.ts              # Tool definitions
 ├── utils.ts              # Utility functions
 └── tests/                # Test files
+scripts/
+└── patch-cursor-sdk-attribution.mjs  # Postinstall SDK attribution patch
 ```
 
 ## Configuration
 
 The adapter uses local Cursor SDK agents and keeps wrapper-level compatibility logic for ACP resume, list, and visible-history replay.
+
+### Commit and PR attribution
+
+cursor-acp honors Cursor's [global CLI attribution settings](https://cursor.com/docs/cli/reference/configuration#optional-fields). Defaults match the SDK: both commit trailers and PR attribution are enabled. To disable them, put this in `~/.cursor/cli-config.json` (or `$CURSOR_CONFIG_DIR/cli-config.json`):
+
+```json
+{
+  "attribution": {
+    "attributeCommitsToAgent": false,
+    "attributePRsToAgent": false
+  }
+}
+```
+
+Attribution is global-only; Cursor project `.cursor/cli.json` files support permissions, not attribution.
 
 ### Session Storage
 

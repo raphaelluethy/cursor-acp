@@ -11,3 +11,7 @@ That section covers:
 - ACP `default_config_options`, parameterized models, and the boolean Fast toggle
 - fallback handling for `CURSOR_ACP_DEFAULT_MODE` / `CURSOR_ACP_DEFAULT_MODEL` / `CURSOR_ACP_DEFAULT_THINKING`
 - removal of legacy Yolo aliases like `bypassPermissions` / `autoRunAllCommands`
+
+Commit and PR attribution is now applied from the **global** Cursor CLI config only (`~/.cursor/cli-config.json` or `$CURSOR_CONFIG_DIR/cli-config.json`). Project `.cursor/cli.json` files are not used for those flags.
+
+**[Commit and PR attribution](../README.md#commit-and-pr-attribution)**

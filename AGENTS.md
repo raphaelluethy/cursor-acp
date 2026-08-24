@@ -1,10 +1,10 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Source lives in `src/`. Key modules include the outer ACP agent (`src/cursor-acp-agent.ts`), the prompt-runner interface (`src/cursor-runner.ts`), the Cursor SDK backend (`src/cursor-sdk-runner.ts`), SDK event conversion (`src/cursor-sdk-event-adapter.ts`), and prompt conversion (`src/prompt-conversion.ts`). Production prompt execution uses `@cursor/sdk`; the adapter adds session persistence, history replay, model and mode controls, and ACP permission fallback behavior. The native ACP and legacy CLI runners remain compatibility surfaces, not the default prompt backend. Tests are in `src/tests/` and use the `.test.ts` naming pattern. Build output is emitted to `dist/` and should not be edited by hand. Documentation and notes live in `docs/`.
+Source lives in `src/`. Key modules include the outer ACP agent (`src/cursor-acp-agent.ts`), the prompt-runner interface (`src/cursor-runner.ts`), the Cursor SDK backend (`src/cursor-sdk-runner.ts`), SDK event conversion (`src/cursor-sdk-event-adapter.ts`), model-id mapping (`src/model-id.ts`), and prompt conversion (`src/prompt-conversion.ts`). Production prompt execution uses `@cursor/sdk`; the adapter adds session persistence, history replay, model and mode controls, and ACP permission fallback behavior. The thinking selector maps SDK `thinking`, `reasoning`, or `effort` parameters while preserving the catalog id. The native ACP and legacy CLI runners remain compatibility surfaces, not the default prompt backend. Tests are in `src/tests/` and use the `.test.ts` naming pattern. Build output is emitted to `dist/` and should not be edited by hand. Documentation and notes live in `docs/`.
 
 ## Build, Test, and Development Commands
-- `nub install`: install dependencies.
+- `nub install`: install dependencies. A postinstall script patches the pinned `@cursor/sdk` so global CLI attribution settings are honored; install fails if that runtime code no longer matches.
 - `nub run build`: compile TypeScript to `dist/` via `tsc`.
 - `nub run start`: run the built CLI from `dist/index.js`.
 - `nub run dev`: build then start (handy for local iteration).
