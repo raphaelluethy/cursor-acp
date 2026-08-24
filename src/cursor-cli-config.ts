@@ -14,11 +14,14 @@ export interface LoadedCursorCliConfig {
 	attribution: CursorCliAttribution;
 }
 
-/** Default attribution when no user/project config is loaded (matches SDK defaults). */
+/** Default attribution when no user config is loaded (matches SDK defaults). */
 export const DEFAULT_CURSOR_CLI_ATTRIBUTION: CursorCliAttribution = {
 	attributeCommitsToAgent: true,
 	attributePRsToAgent: true,
 };
+
+export const CURSOR_ACP_ATTRIBUTE_COMMITS_ENV = "CURSOR_ACP_ATTRIBUTE_COMMITS_TO_AGENT";
+export const CURSOR_ACP_ATTRIBUTE_PRS_ENV = "CURSOR_ACP_ATTRIBUTE_PRS_TO_AGENT";
 
 /** Resolve the Cursor config directory (same rules as the SDK). */
 export function getCursorConfigDir(): string {
@@ -98,7 +101,7 @@ export function collectProjectCliConfigPaths(cwd: string): string[] {
 	return [...new Set(paths.filter((path) => existsSync(path)))];
 }
 
-/** Read user + project CLI config layers the same way `settingSources` expects. */
+/** Read global attribution settings and collect project config paths for diagnostics. */
 export function loadCursorCliConfig(cwd: string = process.cwd()): LoadedCursorCliConfig {
 	const userConfigPath = join(getCursorConfigDir(), "cli-config.json");
 	const userConfig = readJsonObject(userConfigPath);
@@ -106,11 +109,20 @@ export function loadCursorCliConfig(cwd: string = process.cwd()): LoadedCursorCl
 
 	const attribution: CursorCliAttribution = { ...DEFAULT_CURSOR_CLI_ATTRIBUTION };
 	Object.assign(attribution, readAttributionOverrides(userConfig));
-	for (const path of projectConfigPaths) {
-		Object.assign(attribution, readAttributionOverrides(readJsonObject(path)));
-	}
 
 	return { userConfigPath, projectConfigPaths, attribution };
+}
+
+/** Export global Cursor attribution settings for the patched SDK request context. */
+export function applyCursorCliAttributionEnvironment(
+	cwd: string = process.cwd(),
+): LoadedCursorCliConfig {
+	const config = loadCursorCliConfig(cwd);
+	process.env[CURSOR_ACP_ATTRIBUTE_COMMITS_ENV] = String(
+		config.attribution.attributeCommitsToAgent,
+	);
+	process.env[CURSOR_ACP_ATTRIBUTE_PRS_ENV] = String(config.attribution.attributePRsToAgent);
+	return config;
 }
 
 export function commitAttributionEnabled(config: LoadedCursorCliConfig): boolean {

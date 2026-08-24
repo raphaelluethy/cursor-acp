@@ -19,12 +19,14 @@
     "dist/*.js",
     "dist/*.d.ts",
     "dist/*.d.ts.map",
+    "scripts/patch-cursor-sdk-attribution.mjs",
     "README.md",
     "LICENSE",
     "NOTICE",
     "package.json"
   ],
   "scripts": {
+    "postinstall": "node scripts/patch-cursor-sdk-attribution.mjs",
     "build": "tsc",
     "build:clean": "rm -rf dist && tsc",
     "start": "node dist/index.js",

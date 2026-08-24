@@ -48,6 +48,21 @@ Version 0.9.0 moves prompt turns to `@cursor/sdk` instead of `cursor-agent --pri
 
 Use ACP `default_config_options` with Zed versions that support ACP config defaults. The adapter still accepts legacy inline defaults and reads `CURSOR_ACP_DEFAULT_MODE`, `CURSOR_ACP_DEFAULT_MODEL`, and `CURSOR_ACP_DEFAULT_THINKING` as fallbacks.
 
+### Commit and PR attribution
+
+cursor-acp honors Cursor's [global CLI attribution settings](https://cursor.com/docs/cli/reference/configuration#optional-fields). To disable both commit trailers and PR attribution, put this in `~/.cursor/cli-config.json` (or `$CURSOR_CONFIG_DIR/cli-config.json`):
+
+```json
+{
+  "attribution": {
+    "attributeCommitsToAgent": false,
+    "attributePRsToAgent": false
+  }
+}
+```
+
+Attribution is global-only; Cursor project `.cursor/cli.json` files support permissions, not attribution. The pinned SDK currently needs a guarded install-time compatibility patch for these two settings, so dependency installation fails instead of silently ignoring them if Cursor changes the relevant runtime code.
+
 ### Legacy Yolo mode name aliases removed
 
 Older builds accepted `bypassPermissions` and `autoRunAllCommands` as synonyms for **`yolo`** in `default_mode` and in `/mode`. Those names are **no longer accepted**—use **`yolo`** (or pick **Yolo** in the client).

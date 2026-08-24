@@ -8,6 +8,7 @@ import {
 	type SDKMessage,
 } from "@cursor/sdk";
 import { randomUUID } from "node:crypto";
+import { applyCursorCliAttributionEnvironment } from "./cursor-cli-config.js";
 import {
 	sdkMessageToCursorStreamEvent,
 	sdkRunResultToCursorResultEvent,
@@ -260,6 +261,7 @@ export class CursorSdkRunner implements CursorRunner {
 	}
 
 	private agentOptions(options: RunPromptOptions): AgentOptions {
+		applyCursorCliAttributionEnvironment(options.workspace);
 		const config = this.agentConfig(options);
 		return {
 			...(this.apiKey ? { apiKey: this.apiKey } : {}),

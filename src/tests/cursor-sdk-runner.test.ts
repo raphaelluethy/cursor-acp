@@ -1,4 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	CURSOR_ACP_ATTRIBUTE_COMMITS_ENV,
+	CURSOR_ACP_ATTRIBUTE_PRS_ENV,
+} from "../cursor-cli-config.js";
 import type { CursorStreamEvent } from "../cursor-runner.js";
 import { CursorSdkRunner } from "../cursor-sdk-runner.js";
 
@@ -9,6 +16,9 @@ const sdkMocks = vi.hoisted(() => ({
 }));
 
 const logger = { log() {}, error() {} };
+const originalConfigDir = process.env.CURSOR_CONFIG_DIR;
+const originalCommitAttribution = process.env[CURSOR_ACP_ATTRIBUTE_COMMITS_ENV];
+const originalPrAttribution = process.env[CURSOR_ACP_ATTRIBUTE_PRS_ENV];
 
 vi.mock("@cursor/sdk", () => ({
 	Agent: { create: sdkMocks.agentCreate, resume: sdkMocks.agentResume },
@@ -36,6 +46,43 @@ function sdkAgent(agentId: string, messages: unknown[] = []) {
 describe("CursorSdkRunner", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+	});
+
+	afterEach(() => {
+		if (originalConfigDir === undefined) delete process.env.CURSOR_CONFIG_DIR;
+		else process.env.CURSOR_CONFIG_DIR = originalConfigDir;
+		if (originalCommitAttribution === undefined) {
+			delete process.env[CURSOR_ACP_ATTRIBUTE_COMMITS_ENV];
+		} else {
+			process.env[CURSOR_ACP_ATTRIBUTE_COMMITS_ENV] = originalCommitAttribution;
+		}
+		if (originalPrAttribution === undefined) {
+			delete process.env[CURSOR_ACP_ATTRIBUTE_PRS_ENV];
+		} else {
+			process.env[CURSOR_ACP_ATTRIBUTE_PRS_ENV] = originalPrAttribution;
+		}
+	});
+
+	it("applies global attribution settings before creating the SDK agent", async () => {
+		const configDir = mkdtempSync(join(tmpdir(), "cursor-sdk-runner-config-"));
+		writeFileSync(
+			join(configDir, "cli-config.json"),
+			JSON.stringify({
+				attribution: { attributeCommitsToAgent: false, attributePRsToAgent: false },
+			}),
+		);
+		process.env.CURSOR_CONFIG_DIR = configDir;
+		const agent = sdkAgent("agent-attribution");
+		sdkMocks.agentCreate.mockImplementation(async () => {
+			expect(process.env[CURSOR_ACP_ATTRIBUTE_COMMITS_ENV]).toBe("false");
+			expect(process.env[CURSOR_ACP_ATTRIBUTE_PRS_ENV]).toBe("false");
+			return agent;
+		});
+
+		const runner = new CursorSdkRunner("test-key", logger);
+		await runner.startPrompt({ workspace: "/tmp/project", prompt: "hello" }).completed;
+
+		expect(sdkMocks.agentCreate).toHaveBeenCalledOnce();
 	});
 
 	it("creates local agents with Auto Review enabled by default", async () => {

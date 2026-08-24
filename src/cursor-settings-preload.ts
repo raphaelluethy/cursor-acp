@@ -1,5 +1,8 @@
 import { createAgentPlatform } from "@cursor/sdk";
-import { loadCursorCliConfig, type LoadedCursorCliConfig } from "./cursor-cli-config.js";
+import {
+	applyCursorCliAttributionEnvironment,
+	type LoadedCursorCliConfig,
+} from "./cursor-cli-config.js";
 import { getCursorApiKey } from "./cursor-sdk-config.js";
 import { LOCAL_SETTING_SOURCES } from "./cursor-sdk-local-options.js";
 import type { Logger } from "./utils.js";
@@ -18,7 +21,7 @@ export async function preloadCursorCliSettings(
 	cwd: string = process.cwd(),
 	logger: Logger = console,
 ): Promise<LoadedCursorCliConfig> {
-	const config = loadCursorCliConfig(cwd);
+	const config = applyCursorCliAttributionEnvironment(cwd);
 	cachedConfig = config;
 
 	const apiKey = getCursorApiKey();
