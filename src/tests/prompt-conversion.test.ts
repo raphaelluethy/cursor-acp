@@ -51,23 +51,23 @@ describe("prompt conversion", () => {
 		});
 	});
 
-	it("preserves ACP images for SDK messages", () => {
+	it("preserves ACP image data when a source URI is present", () => {
 		const request: PromptRequest = {
 			sessionId: "s1",
 			prompt: [
 				{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
 				{
 					type: "image",
-					data: "",
+					data: "c291cmNlIGltYWdl",
 					uri: "https://example.com/image.png",
-					mimeType: "image/png",
+					mimeType: "image/jpeg",
 				},
 			],
 		};
 
 		expect(promptToCursorImages(request)).toEqual([
 			{ data: "aW1hZ2U=", mimeType: "image/png" },
-			{ url: "https://example.com/image.png" },
+			{ data: "c291cmNlIGltYWdl", mimeType: "image/jpeg" },
 		]);
 	});
 

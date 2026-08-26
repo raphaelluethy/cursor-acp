@@ -1,5 +1,5 @@
 import { PromptRequest } from "@agentclientprotocol/sdk";
-import type { SDKImage } from "@cursor/sdk";
+import type { CursorPromptImage } from "./cursor-runner.js";
 
 function basenameFromUri(uri: string): string {
 	try {
@@ -76,18 +76,12 @@ export function promptToCursorText(prompt: PromptRequest): string {
 }
 
 /** Preserve ACP image chunks for the SDK instead of reducing them to prompt text. */
-export function promptToCursorImages(prompt: PromptRequest): SDKImage[] {
-	return prompt.prompt.flatMap((chunk): SDKImage[] => {
+export function promptToCursorImages(prompt: PromptRequest): CursorPromptImage[] {
+	return prompt.prompt.flatMap((chunk): CursorPromptImage[] => {
 		if (chunk.type !== "image") {
 			return [];
 		}
-		if (chunk.uri) {
-			return [{ url: chunk.uri }];
-		}
-		if (chunk.data) {
-			return [{ data: chunk.data, mimeType: chunk.mimeType || "application/octet-stream" }];
-		}
-		return [];
+		return [{ data: chunk.data, mimeType: chunk.mimeType }];
 	});
 }
 

@@ -4,6 +4,8 @@ import type { CursorModelDescriptor } from "./slash-commands.js";
 
 type Environment = Record<string, string | undefined>;
 
+export type CursorPromptImage = Extract<SDKImage, { data: string }>;
+
 export interface CursorStreamEvent {
 	type: string;
 	subtype?: string;
@@ -13,7 +15,7 @@ export interface CursorStreamEvent {
 export interface RunPromptOptions {
 	workspace: string;
 	prompt: string;
-	images?: SDKImage[];
+	images?: CursorPromptImage[];
 	backendSessionId?: string;
 	modelId?: string;
 	modeId?: "plan" | "ask";
