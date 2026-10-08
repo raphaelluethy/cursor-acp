@@ -338,6 +338,12 @@ reported turn has a hashed identity, collection timestamp, model, project basena
 and separate input, output, cache-read, and cache-write token counts. Prompts,
 responses, full workspace paths, and raw session identifiers are not recorded.
 
+SDK input includes cache reads and writes. Version 2 ledger rows subtract both
+from `input_tokens`, retain the original value as `sdk_input_tokens`, and identify
+the source as `cursor-sdk`. Use a BB Usage collector that supports version 2:
+its corrected rows take precedence over legacy version 1 rows with the same
+event ID, including when repairing old records by appending corrections.
+
 Only future, reported consumption is captured; missing usage is not estimated.
 Run-level totals and reasoning tokens are not added again. Recording failures
 are logged without failing the prompt. BB Usage displays this under Cursor Agent;

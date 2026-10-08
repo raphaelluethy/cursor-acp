@@ -13,15 +13,23 @@ export async function recordSdkUsage(
 	output = join(homedir(), ".cursor", "usage.jsonl"),
 ): Promise<void> {
 	const row = {
-		version: 1,
+		version: 2,
 		kind: "cursor-response",
+		source: "cursor-sdk",
 		eventId: createHash("sha256")
 			.update(JSON.stringify(["cursor-sdk", message.agent_id, message.run_id, turnIndex]))
 			.digest("hex"),
 		timestamp: new Date().toISOString(),
 		model,
 		project: basename(workspace.replace(/\\/g, "/")).slice(0, 80) || "Unknown",
-		input_tokens: message.usage.inputTokens,
+		// Local SDK input includes cache reads and writes; the ledger uses disjoint buckets.
+		sdk_input_tokens: message.usage.inputTokens,
+		input_tokens: Math.max(
+			0,
+			message.usage.inputTokens -
+				message.usage.cacheReadTokens -
+				message.usage.cacheWriteTokens,
+		),
 		output_tokens: message.usage.outputTokens,
 		cache_read_tokens: message.usage.cacheReadTokens,
 		cache_write_tokens: message.usage.cacheWriteTokens,

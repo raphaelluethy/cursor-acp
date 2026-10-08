@@ -21,11 +21,11 @@ it("writes separate token buckets without retaining paths, identifiers, or reaso
 		agent_id: "private-agent",
 		run_id: "private-run",
 		usage: {
-			inputTokens: 7,
+			inputTokens: 49,
 			outputTokens: 3,
 			cacheReadTokens: 31,
 			cacheWriteTokens: 11,
-			totalTokens: 52,
+			totalTokens: 94,
 			reasoningTokens: 2,
 		},
 	};
@@ -46,12 +46,14 @@ it("writes separate token buckets without retaining paths, identifiers, or reaso
 		.split("\n")
 		.map((line) => JSON.parse(line));
 	expect(rows[0]).toEqual({
-		version: 1,
+		version: 2,
 		kind: "cursor-response",
+		source: "cursor-sdk",
 		eventId: expect.stringMatching(/^[a-f0-9]{64}$/),
 		timestamp: expect.any(String),
 		model: "model-a",
 		project: "project",
+		sdk_input_tokens: 49,
 		input_tokens: 7,
 		output_tokens: 3,
 		cache_read_tokens: 31,
