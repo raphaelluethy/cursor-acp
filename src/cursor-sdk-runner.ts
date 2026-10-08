@@ -16,6 +16,7 @@ import {
 } from "./cursor-sdk-event-adapter.js";
 import { getCursorApiKey } from "./cursor-sdk-config.js";
 import { buildLocalAgentOptions } from "./cursor-sdk-local-options.js";
+import { recordSdkUsage } from "./cursor-sdk-usage.js";
 import type {
 	CursorPromptRun,
 	CursorRunner,
@@ -297,7 +298,20 @@ export class CursorSdkRunner implements CursorRunner {
 			hooks.setSteerRun(run);
 			hooks.setCancelRun(() => run.cancel());
 			const streamCompleted = (async () => {
+				let usageTurnIndex = 0;
 				for await (const message of run.stream()) {
+					if (message.type === "usage") {
+						try {
+							await recordSdkUsage(
+								message,
+								usageTurnIndex++,
+								run.model?.id ?? options.modelId ?? "auto",
+								options.workspace,
+							);
+						} catch {
+							this.logger.error?.("[cursor-acp] Could not record SDK token usage");
+						}
+					}
 					let duplicateRunningToolCall = false;
 					if (message.type === "tool_call") {
 						nextAssistantStartsSegment = true;

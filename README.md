@@ -330,6 +330,19 @@ Attribution is global-only; Cursor project `.cursor/cli.json` files support perm
 
 Sessions are persisted under `~/.cursor-acp/sessions/` (or `$CURSOR_ACP_CONFIG_DIR/sessions/` if set). Each project has an encoded subdirectory; session history is stored as JSONL files with user and assistant messages for resume and replay.
 
+### Token usage ledger
+
+Reported SDK `usage` events are appended to `~/.cursor/usage.jsonl` in the
+BB Usage plugin's Cursor ledger format. No response hook is required. Each
+reported turn has a hashed identity, collection timestamp, model, project basename,
+and separate input, output, cache-read, and cache-write token counts. Prompts,
+responses, full workspace paths, and raw session identifiers are not recorded.
+
+Only future, reported consumption is captured; missing usage is not estimated.
+Run-level totals and reasoning tokens are not added again. Recording failures
+are logged without failing the prompt. BB Usage displays this under Cursor Agent;
+any monetary amount is its estimated API cost, not a Cursor subscription charge.
+
 ## Requirements
 
 - [Zed](https://zed.dev)
