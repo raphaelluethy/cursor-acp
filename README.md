@@ -330,6 +330,16 @@ Attribution is global-only; Cursor project `.cursor/cli.json` files support perm
 
 Sessions are persisted under `~/.cursor-acp/sessions/` (or `$CURSOR_ACP_CONFIG_DIR/sessions/` if set). Each project has an encoded subdirectory; session history is stored as JSONL files with user and assistant messages for resume and replay.
 
+### Token usage ledger (opt-in)
+
+Set `CURSOR_ACP_USAGE_LEDGER` to record reported SDK `usage` events as JSONL. It is off by default.
+
+- `1` / `true`: write to `~/.cursor-acp/usage.jsonl` (or `$CURSOR_ACP_CONFIG_DIR/usage.jsonl`).
+- Any other value: a file path, with a leading `~/` expanded (for example `~/.cursor/usage.jsonl` for collectors that read Cursor's ledger location).
+- Unset, empty, `0` or `false`: nothing is recorded.
+
+Each row has `version: 2`, `kind: "cursor-response"`, `source: "cursor-sdk"`, a hashed `eventId`, a timestamp, the model, the project basename, and the `input_tokens`, `output_tokens`, `cache_read_tokens` and `cache_write_tokens` counts. SDK input includes cache reads and writes, so `input_tokens` subtracts both and `sdk_input_tokens` keeps the original value. Prompts, responses, full workspace paths and raw session identifiers are not recorded. Only reported consumption is captured, and recording failures are logged without failing the prompt. The file is created with mode 0600 and is never rotated.
+
 ## Requirements
 
 - [Zed](https://zed.dev)
