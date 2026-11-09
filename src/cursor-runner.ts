@@ -19,7 +19,7 @@ export interface RunPromptOptions {
 	backendSessionId?: string;
 	modelId?: string;
 	modeId?: "plan" | "ask";
-	reviewPolicy?: "auto-review" | "run-everything";
+	reviewPolicy?: "auto-review" | "sandbox-auto-review" | "workspace-sandbox" | "run-everything";
 	streamPartialOutput?: boolean;
 	env?: Environment;
 	modelCatalog?: CursorModelDescriptor[];

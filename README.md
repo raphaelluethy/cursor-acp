@@ -68,6 +68,15 @@ Older builds accepted `bypassPermissions` and `autoRunAllCommands` as synonyms f
 - **What it does**: Creates/resumes the local SDK agent with Auto Review disabled. This is the SDK's headless “run everything” behavior.
 - **Configuration**: Set `default_config_options.mode` to `yolo` or choose Yolo in the mode picker. Do not use removed aliases such as `bypassPermissions` or `autoRunAllCommands`.
 
+### Permission mode setting (opt-in)
+
+Clients that decide permissions at launch can pin the agent mode with a CLI flag or env var. Without either, nothing changes.
+
+- `--permission-mode=full` or `CURSOR_ACP_PERMISSION_MODE=full`: agent sessions run in Yolo (Auto Review off).
+- `--permission-mode=accept-edits` or `CURSOR_ACP_PERMISSION_MODE=accept-edits`: agent sessions run in **Accept edits** (Cursor's local sandbox on, Auto Review off). Auto-review turns also keep the sandbox enabled, an ACP-approved retry stays sandboxed, and switching to Yolo is rejected.
+
+The flag wins over the env var, and `--bb-permission-mode=` is accepted as an alias. New and restored sessions use the configured mode, except that Ask and Plan are kept. Accept edits needs a platform where Cursor's local sandbox is supported. The **Accept edits** mode can also be picked directly in the mode selector without the setting. In every other mode, cursor-acp does not override the SDK's sandbox options, so `~/.cursor/sandbox.json` keeps applying.
+
 The same notice is linked from [`docs/breaking-changes.md`](docs/breaking-changes.md).
 
 ## Slash Commands
@@ -204,7 +213,7 @@ Zed versions with ACP config defaults apply initial controls from `default_confi
 }
 ```
 
-- `mode` — one of `auto-review`, `yolo`, `plan`, or `ask`. Omit it to use the shipped `auto-review` default; legacy `default` values still work as an alias.
+- `mode` — one of `auto-review`, `accept-edits`, `yolo`, `plan`, or `ask`. Omit it to use the shipped `auto-review` default; legacy `default` values still work as an alias.
 - `model` — optional canonical model ID from the Cursor SDK catalog.
 - `fast` — boolean toggle when the selected model advertises a `fast` parameter.
 - `thinking` — ACP config id for the selected model's `thinking`, `reasoning`, or `effort` parameter. For on/off parameters, use `true` or `false`. Multi-level parameters use catalog values (for example `none` / `low` / `medium` / `high` / `xhigh` / `max`, or Effort `low` / `high`). The picker label also comes from the SDK catalog.

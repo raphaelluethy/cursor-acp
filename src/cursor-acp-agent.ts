@@ -105,6 +105,8 @@ import { CustomSkill, loadCustomSkills } from "./skills.js";
 import {
 	AgentSessionModeId,
 	availableModes,
+	permissionSettingSessionMode,
+	PermissionModeSetting,
 	DEFAULT_MODE_ID,
 	getEnvDefaultMode,
 	getEnvDefaultModel,
@@ -531,6 +533,7 @@ export interface SessionState {
 }
 
 export interface CursorAcpAgentOptions {
+	permissionMode?: PermissionModeSetting;
 	runner?: CursorRunner;
 	auth?: CursorAuthClient;
 	logger?: Logger;
@@ -557,6 +560,7 @@ export class CursorAcpAgent implements Agent {
 		callbacks: NativeSessionCallbacks,
 	) => NativeSessionBackend;
 	private readonly nativeCommand?: string;
+	private readonly permissionMode?: PermissionModeSetting;
 
 	constructor(
 		private readonly client: CursorAcpClient,
@@ -566,6 +570,7 @@ export class CursorAcpAgent implements Agent {
 		this.runner = options.runner ?? new CursorSdkRunner(undefined, this.logger);
 		this.auth = options.auth ?? new CursorAuth();
 		this.nativeCommand = options.nativeCommand;
+		this.permissionMode = options.permissionMode;
 		this.createNativeClient =
 			options.createNativeClient ??
 			((nativeOptions, callbacks) => new CursorNativeAcpClient(nativeOptions, callbacks));
@@ -659,7 +664,7 @@ export class CursorAcpAgent implements Agent {
 			sessionId: params.sessionId,
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
-			preferredModeId: meta.modeId,
+			preferredModeId: this.modeForPermissionSetting(meta.modeId),
 			preferredModelId: meta.modelId,
 			preferredThinkingLevel: meta.thinkingLevel,
 			preferredFastValue: meta.fastValue,
@@ -760,7 +765,7 @@ export class CursorAcpAgent implements Agent {
 			sessionId: params.sessionId,
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
-			preferredModeId: meta.modeId,
+			preferredModeId: this.modeForPermissionSetting(meta.modeId),
 			preferredModelId: meta.modelId,
 			preferredThinkingLevel: meta.thinkingLevel,
 			preferredFastValue: meta.fastValue,
@@ -1144,6 +1149,7 @@ export class CursorAcpAgent implements Agent {
 		if (
 			firstAttempt.stopReason === "end_turn" &&
 			(session.modeId === "default" || session.modeId === "auto-review") &&
+			this.permissionMode !== "accept-edits" &&
 			firstAttempt.rejectedToolCalls.length > 0
 		) {
 			const approved = await Promise.race([
@@ -1462,7 +1468,9 @@ export class CursorAcpAgent implements Agent {
 		preferredBackendSessionId?: string;
 		warmNativeBackend?: boolean;
 	}): Promise<ExtendedNewSessionResponse> {
-		const modeId = params.preferredModeId ?? this.defaultModeId ?? DEFAULT_MODE_ID;
+		const modeId =
+			this.modeForPermissionSetting(params.preferredModeId ?? this.defaultModeId) ??
+			DEFAULT_MODE_ID;
 		const configuredModelId = params.preferredModelId ?? this.defaultModelId;
 		const configuredThinkingLevel = params.preferredThinkingLevel ?? this.defaultThinkingLevel;
 		const configuredFastValue = params.preferredFastValue ?? this.defaultFastValue;
@@ -1475,7 +1483,11 @@ export class CursorAcpAgent implements Agent {
 			configuredModelId,
 			configuredThinkingLevel,
 			configuredFastValue,
-			lastAgentModeId: isAgentSessionMode(modeId) ? modeId : "auto-review",
+			lastAgentModeId: isAgentSessionMode(modeId)
+				? modeId
+				: this.permissionMode
+					? permissionSettingSessionMode(this.permissionMode)
+					: "auto-review",
 			cancelled: false,
 			nativeAvailableCommands: [],
 			customSlashCommands: [],
@@ -2208,23 +2220,34 @@ export class CursorAcpAgent implements Agent {
 		forceRetry: boolean,
 	): {
 		modeId?: "plan" | "ask";
-		reviewPolicy: "auto-review" | "run-everything";
+		reviewPolicy:
+			| "auto-review"
+			| "sandbox-auto-review"
+			| "workspace-sandbox"
+			| "run-everything";
 	} {
 		if (forceRetry) {
-			return { reviewPolicy: "run-everything" };
+			return {
+				reviewPolicy:
+					this.permissionMode === "accept-edits" ? "workspace-sandbox" : "run-everything",
+			};
 		}
+		const reviewPolicy =
+			this.permissionMode === "accept-edits" ? "sandbox-auto-review" : "auto-review";
 
 		switch (session.modeId) {
 			case "plan":
-				return { modeId: "plan", reviewPolicy: "auto-review" };
+				return { modeId: "plan", reviewPolicy };
 			case "ask":
-				return { modeId: "ask", reviewPolicy: "auto-review" };
+				return { modeId: "ask", reviewPolicy };
 			case "yolo":
 				return { reviewPolicy: "run-everything" };
+			case "accept-edits":
+				return { reviewPolicy: "workspace-sandbox" };
 			case "auto-review":
-				return { reviewPolicy: "auto-review" };
+				return { reviewPolicy };
 			case "default":
-				return { reviewPolicy: "auto-review" };
+				return { reviewPolicy };
 			default:
 				unreachable(session.modeId, this.logger);
 		}
@@ -2597,6 +2620,7 @@ export class CursorAcpAgent implements Agent {
 		switch (modeId) {
 			case "default":
 			case "auto-review":
+			case "accept-edits":
 			case "yolo":
 				return "agent";
 			case "ask":
@@ -2620,6 +2644,11 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	private async applySessionMode(session: SessionState, modeId: SessionModeId): Promise<void> {
+		if (this.permissionMode === "accept-edits" && modeId === "yolo") {
+			throw RequestError.invalidParams(
+				"Yolo is unavailable while the accept-edits permission mode setting is active",
+			);
+		}
 		const canSetNativeMode =
 			session.nativeClient?.alive &&
 			!(session.nativeStartPromise && !session.backendSessionId);
@@ -2632,6 +2661,11 @@ export class CursorAcpAgent implements Agent {
 
 		this.setSessionModeState(session, modeId);
 		await this.persistSessionMeta(session);
+	}
+
+	private modeForPermissionSetting(modeId?: SessionModeId): SessionModeId | undefined {
+		if (!this.permissionMode || modeId === "ask" || modeId === "plan") return modeId;
+		return permissionSettingSessionMode(this.permissionMode);
 	}
 
 	private setSessionModeState(session: SessionState, modeId: SessionModeId): void {

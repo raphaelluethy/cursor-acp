@@ -9,7 +9,7 @@ import {
 
 describe("settings modes", () => {
 	it("advertises auto-review as the primary agent mode", () => {
-		expect(ADVERTISED_MODE_IDS).toEqual(["auto-review", "yolo", "ask", "plan"]);
+		expect(ADVERTISED_MODE_IDS).toEqual(["auto-review", "accept-edits", "yolo", "ask", "plan"]);
 		expect(DEFAULT_MODE_ID).toBe("auto-review");
 	});
 

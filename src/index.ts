@@ -11,6 +11,7 @@ process.on("unhandledRejection", (reason, promise) => {
 
 import { runAcp } from "./run-acp.js";
 import { CursorAuth } from "./auth.js";
+import { resolvePermissionModeSetting } from "./settings.js";
 
 async function main(): Promise<void> {
 	const command = process.argv[2];
@@ -26,7 +27,7 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	runAcp();
+	runAcp(resolvePermissionModeSetting(process.argv.slice(2)));
 	process.stdin.resume();
 }
 

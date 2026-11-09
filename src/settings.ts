@@ -1,6 +1,6 @@
 export const ADAPTER_NAME = "cursor-acp";
 
-export const ADVERTISED_MODE_IDS = ["auto-review", "yolo", "ask", "plan"] as const;
+export const ADVERTISED_MODE_IDS = ["auto-review", "accept-edits", "yolo", "ask", "plan"] as const;
 
 export const LEGACY_MODE_ALIASES = {
 	default: "auto-review",
@@ -12,10 +12,47 @@ export const LEGACY_MODE_ALIASES = {
 type AdvertisedModeId = (typeof ADVERTISED_MODE_IDS)[number];
 export type SessionModeId = "default" | AdvertisedModeId;
 
-export type AgentSessionModeId = Extract<SessionModeId, "default" | "auto-review" | "yolo">;
+export type AgentSessionModeId = Extract<
+	SessionModeId,
+	"default" | "auto-review" | "accept-edits" | "yolo"
+>;
 
 export function isAgentSessionMode(modeId: SessionModeId): modeId is AgentSessionModeId {
-	return modeId === "default" || modeId === "auto-review" || modeId === "yolo";
+	return (
+		modeId === "default" ||
+		modeId === "auto-review" ||
+		modeId === "accept-edits" ||
+		modeId === "yolo"
+	);
+}
+
+export type PermissionModeSetting = "full" | "accept-edits";
+
+export const PERMISSION_MODE_ENV = "CURSOR_ACP_PERMISSION_MODE";
+
+/** `--bb-permission-mode` is accepted as an alias for clients that already pass it. */
+const PERMISSION_MODE_FLAGS = ["--permission-mode=", "--bb-permission-mode="] as const;
+
+/**
+ * Resolve the opt-in launch permission mode. A `--permission-mode=` flag wins over
+ * `CURSOR_ACP_PERMISSION_MODE`; with neither set, sessions keep their normal modes.
+ */
+export function resolvePermissionModeSetting(
+	args: readonly string[],
+	env: NodeJS.ProcessEnv = process.env,
+): PermissionModeSetting | undefined {
+	const flags = args.filter((arg) => PERMISSION_MODE_FLAGS.some((flag) => arg.startsWith(flag)));
+	if (flags.length > 1) throw new Error("Duplicate --permission-mode argument");
+	const raw = flags[0]
+		? flags[0].slice(flags[0].indexOf("=") + 1)
+		: env[PERMISSION_MODE_ENV]?.trim();
+	if (!raw) return undefined;
+	if (raw === "full" || raw === "accept-edits") return raw;
+	throw new Error(`Invalid permission mode: ${raw} (expected "full" or "accept-edits")`);
+}
+
+export function permissionSettingSessionMode(mode: PermissionModeSetting): AgentSessionModeId {
+	return mode === "full" ? "yolo" : "accept-edits";
 }
 
 export const DEFAULT_MODE_ID: SessionModeId = "auto-review";
@@ -66,6 +103,8 @@ export function modeDisplayName(modeId: SessionModeId): string {
 			return "Default (Auto-review)";
 		case "auto-review":
 			return "Auto-review";
+		case "accept-edits":
+			return "Accept edits";
 		case "yolo":
 			return "Yolo";
 		case "ask":
@@ -84,6 +123,11 @@ export function availableModes(currentModeId: SessionModeId) {
 				name: "Auto-review",
 				description:
 					"Cursor Smart Auto Review runs approved tool calls and fails closed on the rest",
+			},
+			{
+				id: "accept-edits",
+				name: "Accept edits",
+				description: "Run inside Cursor's local sandbox without Smart Auto Review",
 			},
 			{
 				id: "yolo",

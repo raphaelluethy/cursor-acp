@@ -459,12 +459,18 @@ export class CursorSdkRunner implements CursorRunner {
 	private agentConfig(options: RunPromptOptions) {
 		// The SDK has no approval callback. Smart Auto fails closed; an ACP-approved retry
 		// deliberately resumes with Auto-review disabled for that one whole-turn retry.
-		const autoReview = options.reviewPolicy !== "run-everything";
+		const autoReview =
+			options.reviewPolicy !== "run-everything" &&
+			options.reviewPolicy !== "workspace-sandbox";
+		const sandbox =
+			options.reviewPolicy === "workspace-sandbox" ||
+			options.reviewPolicy === "sandbox-auto-review";
 		const ask = options.modeId === "ask";
 		return {
 			autoReview,
+			sandbox,
 			ask,
-			key: JSON.stringify({ autoReview, ask }),
+			key: JSON.stringify({ autoReview, sandbox, ask }),
 		};
 	}
 
@@ -480,7 +486,7 @@ export class CursorSdkRunner implements CursorRunner {
 				options.fastValue,
 				(message) => this.logger.warn?.(message),
 			),
-			local: buildLocalAgentOptions(options.workspace, config.autoReview),
+			local: buildLocalAgentOptions(options.workspace, config.autoReview, config.sandbox),
 			...(config.ask ? { tools: [] } : {}),
 			...(sdkMcpServers(options.mcpServers)
 				? { mcpServers: sdkMcpServers(options.mcpServers) }

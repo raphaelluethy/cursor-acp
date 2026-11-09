@@ -212,6 +212,59 @@ describe("CursorSdkRunner", () => {
 		);
 	});
 
+	it("resumes a full access agent inside the sandbox when switching to accept edits", async () => {
+		const full = sdkAgent("agent-existing");
+		const restricted = sdkAgent("agent-existing");
+		sdkMocks.agentResume.mockResolvedValueOnce(full).mockResolvedValueOnce(restricted);
+		const runner = new CursorSdkRunner("test-key", logger);
+
+		await runner.startPrompt({
+			workspace: "/tmp/project",
+			...sdkSession("agent-existing"),
+			prompt: "full",
+			reviewPolicy: "run-everything",
+		}).completed;
+		await runner.startPrompt({
+			workspace: "/tmp/project",
+			...sdkSession("agent-existing"),
+			prompt: "restricted",
+			reviewPolicy: "workspace-sandbox",
+		}).completed;
+
+		expect(full.close).toHaveBeenCalledOnce();
+		expect(sdkMocks.agentResume).toHaveBeenNthCalledWith(
+			2,
+			"agent-existing",
+			expect.objectContaining({
+				local: expect.objectContaining({
+					autoReview: false,
+					sandboxOptions: { enabled: true },
+				}),
+			}),
+		);
+	});
+
+	it("keeps the sandbox enabled when Auto Review is selected under the accept-edits setting", async () => {
+		const agent = sdkAgent("agent-sandbox-reviewed");
+		sdkMocks.agentCreate.mockResolvedValue(agent);
+		const runner = new CursorSdkRunner("test-key", logger);
+
+		await runner.startPrompt({
+			workspace: "/tmp/project",
+			prompt: "reviewed",
+			reviewPolicy: "sandbox-auto-review",
+		}).completed;
+
+		expect(sdkMocks.agentCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				local: expect.objectContaining({
+					autoReview: true,
+					sandboxOptions: { enabled: true },
+				}),
+			}),
+		);
+	});
+
 	it("forwards ACP MCP servers and image chunks to the SDK", async () => {
 		const agent = sdkAgent("agent-real");
 		sdkMocks.agentCreate.mockResolvedValue(agent);
