@@ -24,6 +24,8 @@ import type {
 } from "./cursor-runner.js";
 import { CursorTransportFailure } from "./cursor-transport-failure.js";
 import { buildSdkModelSelection, ensureAutoModel } from "./model-id.js";
+import { splitSystemInstructionsPrefix } from "./prompt-conversion.js";
+import { buildFirstTurnContext } from "./session-context.js";
 import type { CursorModelDescriptor } from "./slash-commands.js";
 import type { Logger } from "./utils.js";
 
@@ -34,6 +36,12 @@ interface ManagedAgent {
 	agent: SDKAgent;
 	configKey: string;
 	cwd: string;
+	pendingContext?: string;
+}
+
+function prependFirstTurnContext(prompt: string, context: string): string {
+	const { prefix, prompt: userPrompt } = splitSystemInstructionsPrefix(prompt);
+	return `${prefix}${context}\n\n${userPrompt}`;
 }
 
 interface PromptHooks {
@@ -92,6 +100,8 @@ export class CursorSdkRunner implements CursorRunner {
 	constructor(
 		private readonly apiKey: string | undefined = getCursorApiKey(),
 		private readonly logger: Logger = console,
+		private readonly contextBuilder: (workspace: string) => Promise<string> = (workspace) =>
+			buildFirstTurnContext(workspace, undefined, logger),
 	) {}
 
 	async listModels(): Promise<CursorModelDescriptor[]> {
@@ -245,9 +255,13 @@ export class CursorSdkRunner implements CursorRunner {
 						: "run-everything",
 			);
 
-			const message = options.images?.length
-				? { text: options.prompt, images: options.images }
+			const managed = this.agents.get(agent.agentId);
+			const prompt = managed?.pendingContext
+				? prependFirstTurnContext(options.prompt, managed.pendingContext)
 				: options.prompt;
+			const message = options.images?.length
+				? { text: prompt, images: options.images }
+				: prompt;
 			const sendCompleted = agent.send(message, sendOptions);
 			const sendOutcome = await this.completeOperation(sendCompleted, hooks, agent);
 			if (sendOutcome.cancelled && (!sendOutcome.settled || !sendOutcome.succeeded)) {
@@ -257,6 +271,7 @@ export class CursorSdkRunner implements CursorRunner {
 				return { events, resultEvent, stderr, exitCode: 0 };
 			}
 			const run = sendOutcome.value;
+			if (managed) managed.pendingContext = undefined;
 			hooks.setCancelRun(() => run.cancel());
 			const streamCompleted = (async () => {
 				for await (const message of run.stream()) {
@@ -474,10 +489,21 @@ export class CursorSdkRunner implements CursorRunner {
 		}
 
 		const agent = await Agent.create(this.agentOptions(options));
+		let pendingContext: string | undefined;
+		try {
+			pendingContext = (await this.contextBuilder(options.workspace)) || undefined;
+		} catch (error) {
+			this.logger.warn?.("[cursor-acp] Unable to prepare first-turn context", error);
+		}
 		if (backendSessionId) {
 			this.agents.delete(backendSessionId);
 		}
-		this.agents.set(agent.agentId, { agent, cwd: options.workspace, configKey });
+		this.agents.set(agent.agentId, {
+			agent,
+			cwd: options.workspace,
+			configKey,
+			pendingContext,
+		});
 		return agent;
 	}
 }

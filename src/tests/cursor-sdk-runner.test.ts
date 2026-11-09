@@ -25,6 +25,8 @@ vi.mock("@cursor/sdk", () => ({
 	Cursor: { models: { list: sdkMocks.modelList } },
 }));
 
+vi.mock("../session-context.js", () => ({ buildFirstTurnContext: vi.fn(async () => "") }));
+
 function sdkRun(messages: unknown[] = []) {
 	return {
 		cancel: vi.fn(async () => undefined),
@@ -41,6 +43,11 @@ function sdkAgent(agentId: string, messages: unknown[] = []) {
 		close: vi.fn(),
 		send: vi.fn(async () => sdkRun(messages)),
 	};
+}
+
+// The standalone branch uses the original option name; SDK-only aggregation uses sdkSessionId.
+function sdkSession(id: string) {
+	return { backendSessionId: id, sdkSessionId: id };
 }
 
 describe("CursorSdkRunner", () => {
@@ -106,9 +113,58 @@ describe("CursorSdkRunner", () => {
 
 		expect(sdkMocks.agentCreate).toHaveBeenCalledWith(
 			expect.objectContaining({
-				local: expect.objectContaining({ cwd: "/tmp/project", autoReview: true }),
+				local: expect.objectContaining({
+					cwd: "/tmp/project",
+					autoReview: true,
+					settingSources: ["user", "project"],
+				}),
 			}),
 		);
+	});
+
+	it("injects user context once on the first SDK send and preserves BB instructions", async () => {
+		const agent = sdkAgent("agent-context");
+		sdkMocks.agentCreate.mockResolvedValue(agent);
+		const contextBuilder = vi.fn(
+			async () => "<cursor_acp_user_context>Rules and skills</cursor_acp_user_context>",
+		);
+		const runner = new CursorSdkRunner("test-key", logger, contextBuilder);
+		const pending = await runner.createChat();
+
+		await runner.startPrompt({
+			workspace: "/tmp/project",
+			...sdkSession(pending),
+			prompt: "<system_instructions>BB</system_instructions>\n\nfirst request",
+		}).completed;
+		await runner.startPrompt({
+			workspace: "/tmp/project",
+			...sdkSession("agent-context"),
+			prompt: "second request",
+		}).completed;
+
+		expect(contextBuilder).toHaveBeenCalledOnce();
+		expect(agent.send).toHaveBeenNthCalledWith(
+			1,
+			"<system_instructions>BB</system_instructions>\n\n<cursor_acp_user_context>Rules and skills</cursor_acp_user_context>\n\nfirst request",
+			expect.any(Object),
+		);
+		expect(agent.send).toHaveBeenNthCalledWith(2, "second request", expect.any(Object));
+	});
+
+	it("resumes an SDK agent without repeating first-turn context", async () => {
+		const agent = sdkAgent("agent-resumed");
+		sdkMocks.agentResume.mockResolvedValue(agent);
+		const contextBuilder = vi.fn(async () => "Context that already exists in history");
+		const runner = new CursorSdkRunner("test-key", logger, contextBuilder);
+
+		await runner.startPrompt({
+			workspace: "/tmp/project",
+			...sdkSession("agent-resumed"),
+			prompt: "follow-up",
+		}).completed;
+
+		expect(contextBuilder).not.toHaveBeenCalled();
+		expect(agent.send).toHaveBeenCalledWith("follow-up", expect.any(Object));
 	});
 
 	it("resumes with Auto Review disabled for an approved retry without SDK force", async () => {

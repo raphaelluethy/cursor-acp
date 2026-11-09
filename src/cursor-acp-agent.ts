@@ -81,6 +81,7 @@ import {
 	parseLeadingSlashCommand,
 	promptToCursorImages,
 	promptToCursorText,
+	splitSystemInstructionsPrefix,
 } from "./prompt-conversion.js";
 import {
 	CustomSlashCommand,
@@ -773,7 +774,8 @@ export class CursorAcpAgent implements Agent {
 		let promptText = promptToCursorText(params);
 		const promptImages = promptToCursorImages(params);
 
-		const slash = parseLeadingSlashCommand(promptText);
+		const { prefix, prompt } = splitSystemInstructionsPrefix(promptText);
+		const slash = parseLeadingSlashCommand(prompt);
 		if (slash.hasSlash) {
 			if (!this.hasNativeSlashCommand(session, slash.command)) {
 				const handled = await handleSlashCommand(slash.command, slash.args, {
@@ -824,9 +826,10 @@ export class CursorAcpAgent implements Agent {
 						slash.command,
 						slash.args,
 						session.customSlashCommands,
-					) ?? resolveSkillSlashCommandPrompt(slash.command, session.customSkills);
+					) ??
+					resolveSkillSlashCommandPrompt(slash.command, slash.args, session.customSkills);
 				if (customPrompt) {
-					promptText = customPrompt;
+					promptText = prefix + customPrompt;
 				}
 			}
 		}
@@ -1176,7 +1179,7 @@ export class CursorAcpAgent implements Agent {
 	private async loadSessionSlashExtensions(session: SessionState): Promise<void> {
 		const [customSlashCommands, customSkills] = await Promise.allSettled([
 			loadCustomSlashCommands(session.cwd),
-			loadCustomSkills(session.cwd),
+			loadCustomSkills(session.cwd, undefined, this.logger),
 		]);
 
 		if (customSlashCommands.status === "fulfilled") {
