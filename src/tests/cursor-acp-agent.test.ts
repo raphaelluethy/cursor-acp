@@ -21,7 +21,11 @@ import {
 import { CursorAcpAgent } from "../cursor-acp-agent.js";
 import type { CursorAcpClient } from "../cursor-acp-client.js";
 import type { RunPromptOptions } from "../cursor-cli-runner.js";
-import { recordAssistantMessage, recordUserMessage } from "../session-storage.js";
+import {
+	recordAssistantMessage,
+	recordSessionMeta,
+	recordUserMessage,
+} from "../session-storage.js";
 import type { CursorModelDescriptor } from "../slash-commands.js";
 import {
 	agentTestAccess,
@@ -2509,6 +2513,67 @@ describe("CursorAcpAgent", () => {
 			expect(
 				client.updates.filter((u) => u.update?.sessionUpdate === "agent_message_chunk"),
 			).toHaveLength(1);
+		} finally {
+			delete process.env.CURSOR_ACP_CONFIG_DIR;
+			await rm(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves backendSessionId when resuming a session via loadSession", async () => {
+		const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-"));
+		process.env.CURSOR_ACP_CONFIG_DIR = tempRoot;
+
+		try {
+			await recordSessionMeta("/tmp/project", "session-load-test", {
+				backendSessionId: "agent-persisted-sdk-1",
+				modelId: "gpt-5.4-medium",
+			});
+
+			const { agent, legacyPromptCalls } = createAgentTestHarness();
+			await agent.initialize(initRequest());
+			await agent.loadSession({
+				sessionId: "session-load-test",
+				cwd: "/tmp/project",
+				mcpServers: [],
+			});
+
+			await agent.prompt({
+				sessionId: "session-load-test",
+				prompt: [{ type: "text", text: "next question" }],
+			});
+
+			expect(legacyPromptCalls).toHaveLength(1);
+			expect(legacyPromptCalls[0]!.backendSessionId).toBe("agent-persisted-sdk-1");
+		} finally {
+			delete process.env.CURSOR_ACP_CONFIG_DIR;
+			await rm(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves backendSessionId when resuming a session via resumeSession", async () => {
+		const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-"));
+		process.env.CURSOR_ACP_CONFIG_DIR = tempRoot;
+
+		try {
+			await recordSessionMeta("/tmp/project", "session-resume-test", {
+				backendSessionId: "agent-persisted-sdk-2",
+				modelId: "gpt-5.4-medium",
+			});
+
+			const { agent, legacyPromptCalls } = createAgentTestHarness();
+			await agent.initialize(initRequest());
+			await (agent as unknown as { resumeSession: Function }).resumeSession({
+				sessionId: "session-resume-test",
+				cwd: "/tmp/project",
+			});
+
+			await agent.prompt({
+				sessionId: "session-resume-test",
+				prompt: [{ type: "text", text: "next question" }],
+			});
+
+			expect(legacyPromptCalls).toHaveLength(1);
+			expect(legacyPromptCalls[0]!.backendSessionId).toBe("agent-persisted-sdk-2");
 		} finally {
 			delete process.env.CURSOR_ACP_CONFIG_DIR;
 			await rm(tempRoot, { recursive: true, force: true });
