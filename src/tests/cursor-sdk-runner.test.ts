@@ -30,6 +30,7 @@ vi.mock("../session-context.js", () => ({ buildFirstTurnContext: vi.fn(async () 
 function sdkRun(messages: unknown[] = []) {
 	return {
 		cancel: vi.fn(async () => undefined),
+		steer: vi.fn(async () => "complete_delivered" as const),
 		async *stream() {
 			for (const message of messages) yield message;
 		},
@@ -76,6 +77,19 @@ describe("CursorSdkRunner", () => {
 		} else {
 			process.env[CURSOR_ACP_ATTRIBUTE_PRS_ENV] = originalPrAttribution;
 		}
+	});
+
+	it("sends text to the live SDK run", async () => {
+		const run = sdkRun();
+		const agent = sdkAgent("agent-steer");
+		agent.send.mockResolvedValue(run);
+		sdkMocks.agentCreate.mockResolvedValue(agent);
+		const runner = new CursorSdkRunner("test-key", logger);
+		const prompt = runner.startPrompt({ workspace: "/tmp/project", prompt: "work" });
+
+		expect(await prompt.steer?.("adjust")).toBe("complete_delivered");
+		expect(run.steer).toHaveBeenCalledWith("adjust");
+		await prompt.completed;
 	});
 
 	it("applies global attribution settings before creating the SDK agent", async () => {

@@ -6,6 +6,7 @@ import {
 	type McpServerConfig,
 	type SDKAgent,
 	type SDKMessage,
+	type Run,
 } from "@cursor/sdk";
 import { randomUUID } from "node:crypto";
 import { applyCursorCliAttributionEnvironment } from "./cursor-cli-config.js";
@@ -48,6 +49,7 @@ interface PromptHooks {
 	isCancelled: () => boolean;
 	waitUntilCancelled: () => Promise<void>;
 	setCancelRun: (cancel: () => Promise<void>) => void;
+	setSteerRun: (run: Run) => void;
 }
 
 type OperationOutcome<T> =
@@ -95,6 +97,7 @@ function sdkMcpServers(
 }
 
 export class CursorSdkRunner implements CursorRunner {
+	readonly supportsMidTurnSteering = true;
 	private readonly agents = new Map<string, ManagedAgent>();
 
 	constructor(
@@ -143,6 +146,13 @@ export class CursorSdkRunner implements CursorRunner {
 
 	startPrompt(options: RunPromptOptions): CursorPromptRun {
 		let cancelled = false;
+		let resolveRun: ((run: Run) => void) | undefined;
+		let rejectRun: ((error: Error) => void) | undefined;
+		const runReady = new Promise<Run>((resolve, reject) => {
+			resolveRun = resolve;
+			rejectRun = reject;
+		});
+		void runReady.catch(() => undefined);
 		let cancelRun: (() => Promise<void>) | undefined;
 		let resolveCancelled: (() => void) | undefined;
 		const cancelledPromise = new Promise<void>((resolve) => {
@@ -166,18 +176,28 @@ export class CursorSdkRunner implements CursorRunner {
 					cancelActiveRun();
 				}
 			},
+			setSteerRun: (run) => resolveRun?.(run),
 		});
 		void completed.then(
 			() => {
 				cancelRun = undefined;
+				rejectRun?.(new Error("Cursor run ended before steering was available"));
 			},
-			() => {
+			(error: unknown) => {
 				cancelRun = undefined;
+				rejectRun?.(error instanceof Error ? error : new Error(String(error)));
 			},
 		);
 
 		return {
 			completed,
+			steer: async (text) => {
+				const run = await runReady;
+				if (typeof run.steer !== "function") {
+					throw new Error("This Cursor SDK run does not support steering");
+				}
+				return await run.steer(text);
+			},
 			cancel: () => {
 				if (cancelled) {
 					return;
@@ -272,6 +292,7 @@ export class CursorSdkRunner implements CursorRunner {
 			}
 			const run = sendOutcome.value;
 			if (managed) managed.pendingContext = undefined;
+			hooks.setSteerRun(run);
 			hooks.setCancelRun(() => run.cancel());
 			const streamCompleted = (async () => {
 				for await (const message of run.stream()) {

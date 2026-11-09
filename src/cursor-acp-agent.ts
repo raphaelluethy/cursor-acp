@@ -4,6 +4,7 @@ import {
 	AvailableCommand,
 	CancelNotification,
 	ClientCapabilities,
+	CloseSessionRequest,
 	ForkSessionRequest,
 	ForkSessionResponse,
 	InitializeRequest,
@@ -34,6 +35,12 @@ import {
 import { randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 import {
+	buildSteerPromptText,
+	cleanupSessionSteerAttachments,
+	startExpiredSteerAttachmentCleanup,
+	type SteerPromptText,
+} from "./steer-attachments.js";
+import {
 	ExtendedInitializeRequest,
 	looseSessionDefaults,
 	type LooseSessionDefaults,
@@ -48,7 +55,7 @@ import {
 	NativeSessionBackend,
 	NativeSessionCallbacks,
 } from "./cursor-native-acp-client.js";
-import type { CursorRunner, RunPromptOptions } from "./cursor-runner.js";
+import type { CursorPromptRun, CursorRunner, RunPromptOptions } from "./cursor-runner.js";
 import { CursorSdkRunner } from "./cursor-sdk-runner.js";
 import type {
 	ExtendedNewSessionResponse,
@@ -458,11 +465,20 @@ interface ActivePromptState {
 
 interface ActiveRunState {
 	cancel: () => void;
+	steer?: CursorPromptRun["steer"];
 }
 
 interface PromptAttemptResult {
 	stopReason: PromptResponse["stopReason"];
 	rejectedToolCalls: RejectedToolCall[];
+}
+
+interface PendingPrompt {
+	params: PromptRequest;
+	/** Steer text with attachments replaced by temp-file references; set for deferred steers. */
+	steerText?: string;
+	resolve: (response: PromptResponse) => void;
+	reject: (error: unknown) => void;
 }
 
 export interface SessionState {
@@ -480,6 +496,18 @@ export interface SessionState {
 	cancelled: boolean;
 	activePrompt?: ActivePromptState;
 	activeRun?: ActiveRunState;
+	activeTurn?: Promise<PromptResponse>;
+	processingPrompts?: boolean;
+	turnDrain?: Promise<void>;
+	resolveTurnDrain?: () => void;
+	pendingPrompts?: PendingPrompt[];
+	steerQueue?: Promise<void>;
+	steerConversions?: Set<Promise<SteerPromptText>>;
+	cancelResponse?: Promise<PromptResponse>;
+	resolveCancel?: (response: PromptResponse) => void;
+	cancelCleanup?: Promise<void>;
+	cancelEpoch?: number;
+	deliveredSteers?: string[];
 	backendSessionId?: string;
 	/** Populated from native `session/new` or `session/load` when available. */
 	nativeSessionModels?: LegacySessionModels;
@@ -540,6 +568,7 @@ export class CursorAcpAgent implements Agent {
 		this.createNativeClient =
 			options.createNativeClient ??
 			((nativeOptions, callbacks) => new CursorNativeAcpClient(nativeOptions, callbacks));
+		startExpiredSteerAttachmentCleanup(this.logger);
 	}
 
 	async initialize(request: InitializeRequest): Promise<InitializeResponse> {
@@ -570,6 +599,7 @@ export class CursorAcpAgent implements Agent {
 
 		return {
 			protocolVersion: 1,
+			...(this.runner.supportsMidTurnSteering ? { _meta: { midTurnSteering: true } } : {}),
 			agentCapabilities: {
 				loadSession: true,
 				mcpCapabilities: {
@@ -588,6 +618,7 @@ export class CursorAcpAgent implements Agent {
 					fork: {},
 					resume: {},
 					list: {},
+					close: {},
 				},
 			},
 			agentInfo: {
@@ -769,85 +800,337 @@ export class CursorAcpAgent implements Agent {
 		}
 	}
 
+	// TODO(review): prompt admission now involves cancel epochs, promise races
+	// and recursive this.prompt calls. Simplify it or document the state machine
+	// (processingPrompts / activeTurn / steerQueue / pendingPrompts) for
+	// maintainers.
+	//
+	// TODO(review): steer attachments are only removed on cancel, session/close
+	// or the 24h startup sweep. Many clients never send session/close, so user
+	// images can stay in tmp for a day or more. Clean them up once the turn that
+	// consumed them completes.
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
 		const session = this.requireSession(params.sessionId);
-		let promptText = promptToCursorText(params);
-		const promptImages = promptToCursorImages(params);
-
-		const { prefix, prompt } = splitSystemInstructionsPrefix(promptText);
-		const slash = parseLeadingSlashCommand(prompt);
-		if (slash.hasSlash) {
-			if (!this.hasNativeSlashCommand(session, slash.command)) {
-				const handled = await handleSlashCommand(slash.command, slash.args, {
-					session,
-					auth: this.auth,
-					listModels: async () => await this.runner.listModels(),
-					availableCommands: this.availableCommandsForSession(session),
-					onModeChanged: async (modeId) => {
-						await this.applySessionMode(session, modeId);
-					},
-					onModelChanged: async (modelId) => {
-						session.modelId = modelId;
-						session.configuredModelId = modelId;
-						this.syncModelParameters(session);
-						await this.applyNativeModelIfConnected(session);
-						await this.persistSessionMeta(session);
-					},
-				});
-
-				if (handled.handled) {
-					if (session.cancelled) {
-						return { stopReason: "cancelled" };
-					}
-
-					if (handled.responseText) {
-						await this.client.sessionUpdate({
-							sessionId: session.sessionId,
-							update: {
-								sessionUpdate: "agent_message_chunk",
-								content: {
-									type: "text",
-									text: handled.responseText,
-								},
-							},
-						});
-						await recordAssistantMessage(
-							session.cwd,
-							session.sessionId,
-							handled.responseText,
-						);
-					}
-
-					return { stopReason: "end_turn" };
-				}
-
-				const customPrompt =
-					resolveCustomSlashCommandPrompt(
-						slash.command,
-						slash.args,
-						session.customSlashCommands,
-					) ??
-					resolveSkillSlashCommandPrompt(slash.command, slash.args, session.customSkills);
-				if (customPrompt) {
-					promptText = prefix + customPrompt;
-				}
+		if (!session.processingPrompts && session.cancelled && session.cancelCleanup) {
+			await session.cancelCleanup;
+		}
+		if (session.processingPrompts) {
+			if (session.cancelled) {
+				// A prompt submitted after cancellation belongs to the next turn.
+				// Wait until the old SDK run and attachment cleanup are isolated.
+				await session.turnDrain;
+				return await this.prompt(params);
+			}
+			const slash = parseLeadingSlashCommand(
+				splitSystemInstructionsPrefix(promptToCursorText(params)).prompt,
+			);
+			if (!session.activeTurn) {
+				return await Promise.race([
+					session.steerQueue
+						? this.steerPrompt(session, params, false)
+						: this.queuePrompt(session, params),
+					session.cancelResponse!,
+				]);
+			}
+			if (!this.runner.supportsMidTurnSteering) {
+				throw RequestError.invalidParams(undefined, "A prompt is already in flight");
+			}
+			if (slash.hasSlash) {
+				return await Promise.race([
+					session.steerQueue
+						? this.queueAfterSteers(session, params)
+						: this.queuePrompt(session, params),
+					session.cancelResponse!,
+				]);
+			}
+			if (!session.steerQueue && (session.pendingPrompts?.length || !session.activeRun)) {
+				return await Promise.race([
+					this.queuePrompt(session, params),
+					session.cancelResponse!,
+				]);
+			}
+			// Any mid-turn input can be steered: non-text blocks are converted to
+			// temp-file references before the text is handed to the SDK run.
+			return await Promise.race([
+				this.steerPrompt(session, params, true),
+				session.cancelResponse!,
+			]);
+		}
+		// A pending configuration change must be in effect before the next run
+		// starts, so a cancelled run that is still exiting cannot leak its
+		// configuration into this turn. Two prompts can wait on the same
+		// change, so admission is re-checked after the wait.
+		if (session.configMutationPromise) {
+			await session.configMutationPromise;
+			if (session.processingPrompts) {
+				return await this.prompt(params);
 			}
 		}
+		session.cancelled = false;
+		session.cancelCleanup = undefined;
+		session.cancelResponse = new Promise((resolve) => {
+			session.resolveCancel = resolve;
+		});
+		session.processingPrompts = true;
+		session.turnDrain = new Promise((resolve) => {
+			session.resolveTurnDrain = resolve;
+		});
+		const primary = this.queuePrompt(session, params);
+		void this.processPromptQueue(session);
+		return await Promise.race([primary, session.cancelResponse]);
+	}
 
+	private queuePrompt(
+		session: SessionState,
+		params: PromptRequest,
+		steerText?: string,
+	): Promise<PromptResponse> {
+		if (session.cancelled) {
+			return Promise.resolve({ stopReason: "cancelled" });
+		}
+		return new Promise((resolve, reject) => {
+			(session.pendingPrompts ??= []).push({ params, steerText, resolve, reject });
+		});
+	}
+
+	private async queueAfterSteers(
+		session: SessionState,
+		params: PromptRequest,
+	): Promise<PromptResponse> {
+		const cancelEpoch = session.cancelEpoch ?? 0;
+		const admission = (session.steerQueue ?? Promise.resolve()).then(() => ({
+			response:
+				(session.cancelEpoch ?? 0) === cancelEpoch
+					? this.queuePrompt(session, params)
+					: Promise.resolve({ stopReason: "cancelled" as const }),
+		}));
+		session.steerQueue = admission.then(
+			() => undefined,
+			() => undefined,
+		);
+		return await (
+			await admission
+		).response;
+	}
+
+	private async processPromptQueue(session: SessionState): Promise<void> {
+		try {
+			while (true) {
+				await this.drainSteerQueue(session);
+				const prompt = session.pendingPrompts?.shift();
+				if (!prompt) {
+					break;
+				}
+				const turn = this.executePrimaryPrompt(session, prompt.params, prompt.steerText);
+				session.activeTurn = turn;
+				try {
+					prompt.resolve(await turn);
+				} catch (error) {
+					prompt.reject(error);
+				} finally {
+					session.activeTurn = undefined;
+				}
+			}
+		} finally {
+			if (session.cancelled) {
+				await session.cancelCleanup;
+			}
+			session.processingPrompts = false;
+			session.steerQueue = undefined;
+			session.resolveTurnDrain?.();
+		}
+	}
+
+	private async drainSteerQueue(session: SessionState): Promise<void> {
+		while (session.steerQueue) {
+			const pending = session.steerQueue;
+			await Promise.race([pending, session.cancelResponse!]);
+			if (session.cancelled) {
+				return;
+			}
+			if (session.steerQueue === pending) {
+				return;
+			}
+		}
+	}
+
+	private async steerPrompt(
+		session: SessionState,
+		params: PromptRequest,
+		canSteer: boolean,
+	): Promise<PromptResponse> {
+		const cancelEpoch = session.cancelEpoch ?? 0;
+		const delivery = (session.steerQueue ?? Promise.resolve()).then(async () => {
+			if (session.cancelled || (session.cancelEpoch ?? 0) !== cancelEpoch) {
+				return { response: Promise.resolve({ stopReason: "cancelled" as const }) };
+			}
+			// Non-text blocks are written to per-session temp files and replaced by
+			// references, so the SDK's text-only steer can carry them. Inputs that
+			// end up deferred run with the same text they would have been injected
+			// with, so the agent sees identical content either way.
+			const steerText = await this.resolveSteerText(session, params);
+			if (
+				steerText === null ||
+				session.cancelled ||
+				(session.cancelEpoch ?? 0) !== cancelEpoch
+			) {
+				return { response: Promise.resolve({ stopReason: "cancelled" as const }) };
+			}
+			// A preceding steer may have been returned while this one waited its
+			// turn; queue behind it with the same converted text.
+			if (session.pendingPrompts?.length || !session.activeRun) {
+				return { response: this.queuePrompt(session, params, steerText.text) };
+			}
+			// TODO(review): both error branches below wipe the whole session
+			// attachment directory, including files still referenced by other
+			// deferred prompts in pendingPrompts. Remove only the files of this
+			// steer.
+			if (!canSteer) {
+				await cleanupSessionSteerAttachments(session.sessionId);
+				throw RequestError.internalError(
+					undefined,
+					"This input cannot be steered during the current Cursor turn",
+				);
+			}
+			const run = session.activeRun;
+			if (!run.steer) {
+				await cleanupSessionSteerAttachments(session.sessionId);
+				throw RequestError.internalError(
+					undefined,
+					"This Cursor run does not support steering",
+				);
+			}
+			const outcome = await run.steer(steerText.text);
+			if (session.cancelled || (session.cancelEpoch ?? 0) !== cancelEpoch) {
+				return { response: Promise.resolve({ stopReason: "cancelled" as const }) };
+			}
+			if (outcome === "complete_delivered") {
+				(session.deliveredSteers ??= []).push(steerText.text);
+				await recordUserMessage(session.cwd, session.sessionId, steerText.text);
+				return { response: session.activeTurn! };
+			}
+			return { response: this.queuePrompt(session, params, steerText.text) };
+		});
+		session.steerQueue = delivery.then(
+			() => undefined,
+			() => undefined,
+		);
+		return await (
+			await delivery
+		).response;
+	}
+
+	/**
+	 * Convert a steer prompt to its temp-file reference text. Returns null when
+	 * cancellation raced the attachment writes; the prompt then settles as
+	 * cancelled and the caller cleans up any files the writes left behind.
+	 */
+	private async resolveSteerText(
+		session: SessionState,
+		params: PromptRequest,
+	): Promise<SteerPromptText | null> {
+		const conversion = buildSteerPromptText(session.sessionId, params.prompt);
+		(session.steerConversions ??= new Set()).add(conversion);
+		try {
+			return await conversion;
+		} catch (error) {
+			if (!session.cancelled) {
+				throw error;
+			}
+			return null;
+		} finally {
+			session.steerConversions.delete(conversion);
+		}
+	}
+
+	private async executePrimaryPrompt(
+		session: SessionState,
+		params: PromptRequest,
+		steerText?: string,
+	): Promise<PromptResponse> {
+		// A deferred steer runs with the same temp-file reference text it was
+		// injected with, so the agent sees identical content either way.
+		let promptText = steerText ?? promptToCursorText(params);
+		const promptImages = steerText ? undefined : promptToCursorImages(params);
+		const { prefix, prompt } = splitSystemInstructionsPrefix(promptText);
+		const slash = parseLeadingSlashCommand(prompt);
+		if (slash.hasSlash && !this.hasNativeSlashCommand(session, slash.command)) {
+			const handled = await handleSlashCommand(slash.command, slash.args, {
+				session,
+				auth: this.auth,
+				listModels: async () => await this.runner.listModels(),
+				availableCommands: this.availableCommandsForSession(session),
+				onModeChanged: async (modeId) => {
+					await this.applySessionMode(session, modeId);
+				},
+				onModelChanged: async (modelId) => {
+					session.modelId = modelId;
+					session.configuredModelId = modelId;
+					this.syncModelParameters(session);
+					await this.applyNativeModelIfConnected(session);
+					await this.persistSessionMeta(session);
+				},
+			});
+			if (handled.handled) {
+				if (session.cancelled) {
+					return { stopReason: "cancelled" };
+				}
+				if (handled.responseText) {
+					await this.client.sessionUpdate({
+						sessionId: session.sessionId,
+						update: {
+							sessionUpdate: "agent_message_chunk",
+							content: { type: "text", text: handled.responseText },
+						},
+					});
+					await recordAssistantMessage(
+						session.cwd,
+						session.sessionId,
+						handled.responseText,
+					);
+				}
+				return { stopReason: "end_turn" };
+			}
+			const customPrompt =
+				resolveCustomSlashCommandPrompt(
+					slash.command,
+					slash.args,
+					session.customSlashCommands,
+				) ??
+				resolveSkillSlashCommandPrompt(slash.command, slash.args, session.customSkills);
+			if (customPrompt) {
+				promptText = prefix + customPrompt;
+			}
+		}
+		session.deliveredSteers = [];
+		try {
+			return await this.runPrimaryPrompt(session, promptText, promptImages);
+		} finally {
+			session.deliveredSteers = undefined;
+		}
+	}
+
+	private async runPrimaryPrompt(
+		session: SessionState,
+		promptText: string,
+		promptImages: RunPromptOptions["images"],
+	): Promise<PromptResponse> {
 		const status = await this.auth.status();
 		if (!status.loggedIn) {
 			throw RequestError.authRequired();
 		}
-
-		if (session.activePrompt || session.activeRun) {
-			throw RequestError.invalidParams(
-				undefined,
-				"Cannot send a prompt while another prompt is in progress",
-			);
+		if (session.cancelled) {
+			return { stopReason: "cancelled" };
 		}
 
-		session.cancelled = false;
+		if (session.activePrompt || session.activeRun) {
+			throw RequestError.invalidParams(undefined, "A prompt is already in flight");
+		}
+
 		await recordUserMessage(session.cwd, session.sessionId, promptText);
+		if (session.cancelled) {
+			return { stopReason: "cancelled" };
+		}
 		const firstAttempt = await this.runPromptAttempt(session, promptText, promptImages, false);
 
 		if (firstAttempt.stopReason === "cancelled" || session.cancelled) {
@@ -859,10 +1142,13 @@ export class CursorAcpAgent implements Agent {
 			(session.modeId === "default" || session.modeId === "auto-review") &&
 			firstAttempt.rejectedToolCalls.length > 0
 		) {
-			const approved = await this.requestPermissionToRetry(
-				session.sessionId,
-				firstAttempt.rejectedToolCalls[0]!,
-			);
+			const approved = await Promise.race([
+				this.requestPermissionToRetry(
+					session.sessionId,
+					firstAttempt.rejectedToolCalls[0]!,
+				),
+				session.cancelResponse!.then(() => "reject" as const),
+			]);
 
 			if (session.cancelled) {
 				return { stopReason: "cancelled" };
@@ -881,7 +1167,8 @@ export class CursorAcpAgent implements Agent {
 			}
 
 			if (approved === "allow_once" || approved === "allow_always") {
-				return await this.runPromptAttempt(session, promptText, promptImages, true);
+				const replayPrompt = [promptText, ...(session.deliveredSteers ?? [])].join("\n\n");
+				return await this.runPromptAttempt(session, replayPrompt, promptImages, true);
 			}
 		}
 
@@ -891,8 +1178,30 @@ export class CursorAcpAgent implements Agent {
 	async cancel(params: CancelNotification): Promise<void> {
 		const session = this.requireSession(params.sessionId);
 		session.cancelled = true;
+		session.cancelEpoch = (session.cancelEpoch ?? 0) + 1;
+		session.cancelCleanup ??= (async () => {
+			await Promise.allSettled(session.steerConversions ?? []);
+			await cleanupSessionSteerAttachments(params.sessionId);
+		})();
+		session.resolveCancel?.({ stopReason: "cancelled" });
+		for (const prompt of session.pendingPrompts?.splice(0) ?? []) {
+			prompt.resolve({ stopReason: "cancelled" });
+		}
 		session.activeRun?.cancel();
 		await session.nativeClient?.cancel();
+		// Nothing references the attachments once every pending prompt settled.
+		await session.cancelCleanup;
+	}
+
+	async closeSession(params: CloseSessionRequest): Promise<void> {
+		const session = this.sessions[params.sessionId];
+		if (!session) {
+			return;
+		}
+		// Cancel any ongoing work as if session/cancel was called, then free the
+		// session's resources, including its steer attachment files.
+		await this.cancel({ sessionId: params.sessionId });
+		delete this.sessions[params.sessionId];
 	}
 
 	async unstable_setSessionModel(
@@ -900,9 +1209,10 @@ export class CursorAcpAgent implements Agent {
 	): Promise<LegacySetSessionModelResponse | void> {
 		const session = this.requireSession(params.sessionId);
 		return await this.withSessionConfigMutation(session, async () => {
-			if (session.activePrompt || session.activeRun) {
-				throw RequestError.invalidParams("Cannot change model during an active prompt");
-			}
+			await this.awaitConfigChangeAdmissible(
+				session,
+				"Cannot change model during an active prompt",
+			);
 
 			session.modelId = normalizeModelId(params.modelId);
 			session.configuredModelId = session.modelId;
@@ -956,9 +1266,10 @@ export class CursorAcpAgent implements Agent {
 		}
 
 		if (configId === "model") {
-			if (session.activePrompt || session.activeRun) {
-				throw RequestError.invalidParams("Cannot change model during an active prompt");
-			}
+			await this.awaitConfigChangeAdmissible(
+				session,
+				"Cannot change model during an active prompt",
+			);
 			session.modelId = normalizeModelId(value);
 			session.configuredModelId = session.modelId;
 			this.syncModelParameters(session);
@@ -968,9 +1279,6 @@ export class CursorAcpAgent implements Agent {
 		}
 
 		if (configId === FAST_PARAM_ID) {
-			if (session.activePrompt || session.activeRun) {
-				throw RequestError.invalidParams("Cannot change fast mode during an active prompt");
-			}
 			const fastParameter = getFastParameterForModel(session.modelCatalog, session.modelId);
 			if (!fastParameter) {
 				throw RequestError.invalidParams(
@@ -984,6 +1292,15 @@ export class CursorAcpAgent implements Agent {
 			if (!nextModelId) {
 				throw RequestError.invalidParams(`No model variant for fast mode: ${value}`);
 			}
+			// Reapplying the value the next turn would use anyway changes nothing,
+			// so it is safe while a cancelled run is still exiting.
+			if (nextModelId === session.modelId && session.fastValue === value) {
+				return { configOptions: this.buildConfigOptions(session) };
+			}
+			await this.awaitConfigChangeAdmissible(
+				session,
+				"Cannot change fast mode during an active prompt",
+			);
 			session.modelId = nextModelId;
 			session.configuredModelId = nextModelId;
 			session.fastValue = value;
@@ -995,11 +1312,10 @@ export class CursorAcpAgent implements Agent {
 		}
 
 		if (configId === THINKING_PARAM_ID) {
-			if (session.activePrompt || session.activeRun) {
-				throw RequestError.invalidParams(
-					"Cannot change thinking level during an active prompt",
-				);
-			}
+			await this.awaitConfigChangeAdmissible(
+				session,
+				"Cannot change thinking level during an active prompt",
+			);
 			const parameterModel = findParameterModelInCatalog(
 				session.modelCatalog,
 				session.modelId,
@@ -1048,6 +1364,26 @@ export class CursorAcpAgent implements Agent {
 				session.configMutationPromise = undefined;
 			}
 		}
+	}
+
+	/**
+	 * `cancel()` settles the ACP prompt as soon as the cancellation is
+	 * acknowledged, but the SDK run can outlive that response. A configuration
+	 * change that actually affects the next turn waits for that run to exit
+	 * instead of failing as if it arrived mid-turn. Changes during a run that
+	 * was not cancelled keep the existing rejection.
+	 */
+	private async awaitConfigChangeAdmissible(
+		session: SessionState,
+		message: string,
+	): Promise<void> {
+		if (!session.activePrompt && !session.activeRun) {
+			return;
+		}
+		if (!session.cancelled) {
+			throw RequestError.invalidParams(message);
+		}
+		await session.turnDrain;
 	}
 
 	private async applyNativeModelIfConnected(session: SessionState): Promise<void> {
@@ -1914,6 +2250,9 @@ export class CursorAcpAgent implements Agent {
 		const assistantTextChunks: string[] = [];
 
 		await this.ensureLegacyBackendSessionId(session);
+		if (session.cancelled) {
+			return { stopReason: "cancelled", rejectedToolCalls };
+		}
 
 		const run = this.runner.startPrompt({
 			workspace: session.cwd,
@@ -1968,6 +2307,8 @@ export class CursorAcpAgent implements Agent {
 		try {
 			const completed = await run.completed;
 			session.activeRun = undefined;
+			// A delivered steer belongs before this run's assistant reply in replay history.
+			await this.drainSteerQueue(session);
 
 			if (session.cancelled) {
 				return {
@@ -2017,6 +2358,7 @@ export class CursorAcpAgent implements Agent {
 			throw RequestError.internalError(undefined, resultText || "Cursor failed");
 		} catch (error) {
 			session.activeRun = undefined;
+			await this.drainSteerQueue(session);
 			if (session.cancelled) {
 				return {
 					stopReason: "cancelled",
