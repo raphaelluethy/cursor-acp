@@ -83,5 +83,8 @@
       "version": "^0.7.5",
       "onFail": "ignore"
     }
+  },
+  "overrides": {
+    "vite": "^7.3.2"
   }
 }
