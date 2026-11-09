@@ -30,9 +30,9 @@ const variants = [
 		name: "bundled",
 		paths: [join(distDirectory, "bundled", "index.js")],
 		original:
-			"let P=this.attributionConfigProvider?.get();let k=U?!1:P?.attribution?.attributeCommitsToAgent??!0;let j=U?!1:P?.attribution?.attributePRsToAgent??!0",
+			"let j=this.attributionConfigProvider?.get();let T=L?!1:j?.attribution?.attributeCommitsToAgent??!0;let M=L?!1:j?.attribution?.attributePRsToAgent??!0",
 		patched:
-			'let P=this.attributionConfigProvider?.get();let k=U?!1:P?.attribution?.attributeCommitsToAgent??"false"!==process.env.CURSOR_ACP_ATTRIBUTE_COMMITS_TO_AGENT;let j=U?!1:P?.attribution?.attributePRsToAgent??"false"!==process.env.CURSOR_ACP_ATTRIBUTE_PRS_TO_AGENT',
+			'let j=this.attributionConfigProvider?.get();let T=L?!1:j?.attribution?.attributeCommitsToAgent??"false"!==process.env.CURSOR_ACP_ATTRIBUTE_COMMITS_TO_AGENT;let M=L?!1:j?.attribution?.attributePRsToAgent??"false"!==process.env.CURSOR_ACP_ATTRIBUTE_PRS_TO_AGENT',
 	},
 ];
 
