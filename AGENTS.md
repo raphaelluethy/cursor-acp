@@ -14,6 +14,7 @@ Source lives in `src/`. Key modules include the outer ACP agent (`src/cursor-acp
 - `nub run test`: Vitest in watch mode.
 - `nub run test:run`: one-shot test run.
 - `nub run test:coverage`: one-shot run with coverage.
+- `nub run test:acp`: ACP readiness suite. It drives the agent through a real ACP client connection with a scripted fake backend (no login or network) and checks what an editor UI receives.
 
 ## Coding Style & Naming Conventions
 This is an ESM TypeScript project. Follow existing patterns in `src/`: kebab-case filenames (for example `cursor-event-mapper.ts`), `camelCase` for variables/functions, `PascalCase` for classes/types, and `UPPER_SNAKE_CASE` for constants. Use `oxlint` and `oxfmt` as the primary style and formatting tools; ESLint/Prettier scripts exist for legacy checks.

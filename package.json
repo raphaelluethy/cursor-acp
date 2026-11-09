@@ -45,6 +45,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:acp": "vitest run src/tests/acp-readiness.test.ts",
     "prepublishOnly": "nub run build:clean"
   },
   "keywords": [
