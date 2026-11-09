@@ -1,5 +1,8 @@
 # cursor-acp
 
+> [!IMPORTANT]
+> **This project is archived and no longer maintained.** With recent changes to Cursor's product, I no longer use this ACP adapter myself, so I'm not developing it further. The code stays available as-is; feel free to fork it.
+
 > **Why does this exist?** Cursor published their own ACP client ([docs](https://cursor.com/docs/cli/acp#ide-integrations)), but using it in Zed was rough as I somehow had to permit tool calls the whole time.
 
 Disclaimer: I am not affiliated with Cursor or Zed. This project is a personal experiment and should not be considered an official product of either company. I am a big fan of both products and wanted to combine what I like with both of them: An amazing editor and a great AI coding agent (and composer-1, holy this model flies xD).
