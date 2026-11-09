@@ -39,9 +39,11 @@ export interface RunPromptResult {
 export interface CursorPromptRun {
 	completed: Promise<RunPromptResult>;
 	cancel: () => void;
+	steer?: (text: string) => Promise<"complete_delivered" | "revert_to_followup">;
 }
 
 export interface CursorRunner {
+	supportsMidTurnSteering?: boolean;
 	listModels(): Promise<CursorModelDescriptor[]>;
 	createChat(): Promise<string>;
 	startPrompt(options: RunPromptOptions): CursorPromptRun;

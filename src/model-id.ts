@@ -8,7 +8,41 @@ import type {
 export const THINKING_PARAM_ID = "thinking";
 export const FAST_PARAM_ID = "fast";
 
-const THINKING_PARAM_IDS = [THINKING_PARAM_ID, "reasoning", "effort"];
+const THINKING_PARAM_IDS = [THINKING_PARAM_ID, "reasoning", "reasoning_effort", "effort"];
+const CONTEXT_1M_SUFFIX = "[context=1m]";
+
+function stripContextVariant(modelId: string): string {
+	return modelId.endsWith(CONTEXT_1M_SUFFIX)
+		? modelId.slice(0, -CONTEXT_1M_SUFFIX.length)
+		: modelId;
+}
+
+export function withContextModelVariants(models: CursorModelDescriptor[]): CursorModelDescriptor[] {
+	const result: CursorModelDescriptor[] = [];
+	const seen = new Set(models.map((model) => model.modelId));
+	for (const model of models) {
+		result.push(model);
+		if (
+			model.modelId !== "auto" &&
+			!model.modelId.endsWith(CONTEXT_1M_SUFFIX) &&
+			!seen.has(`${model.modelId}${CONTEXT_1M_SUFFIX}`) &&
+			model.parameters?.some(
+				(parameter) =>
+					parameter.id === "context" &&
+					parameter.values.some((value) => value.value === "1m"),
+			)
+		) {
+			seen.add(`${model.modelId}${CONTEXT_1M_SUFFIX}`);
+			result.push({
+				...model,
+				modelId: `${model.modelId}${CONTEXT_1M_SUFFIX}`,
+				name: `${model.name} (1M)`,
+				current: false,
+			});
+		}
+	}
+	return result;
+}
 
 const AUTO_MODEL: CursorModelDescriptor = {
 	modelId: "auto",
@@ -33,6 +67,7 @@ interface ParsedLegacyModelId {
 	baseModelId: string;
 	fast?: boolean;
 	thinking?: string;
+	context?: string;
 }
 
 interface CliVariantInfo {
@@ -79,6 +114,13 @@ function parseLegacyModelId(modelId: string): ParsedLegacyModelId | null {
 			parsed.fast = value === "true";
 			continue;
 		}
+		if (key === "context") {
+			if (value !== "1m") {
+				return null;
+			}
+			parsed.context = value;
+			continue;
+		}
 
 		if (key === THINKING_PARAM_ID || key === "reasoning" || key === "effort") {
 			parsed.thinking = value;
@@ -113,18 +155,21 @@ export function normalizeModelId(modelId: string): string {
 	if (parsed.thinking) {
 		return trimmed;
 	}
+	const contextSuffix = parsed.context === "1m" ? CONTEXT_1M_SUFFIX : "";
 
 	if (parsed.fast === true) {
-		return parsed.baseModelId.endsWith("-fast")
-			? parsed.baseModelId
-			: `${parsed.baseModelId}-fast`;
+		return (
+			(parsed.baseModelId.endsWith("-fast")
+				? parsed.baseModelId
+				: `${parsed.baseModelId}-fast`) + contextSuffix
+		);
 	}
 
 	if (parsed.fast === false) {
-		return parsed.baseModelId.replace(/-fast$/, "");
+		return parsed.baseModelId.replace(/-fast$/, "") + contextSuffix;
 	}
 
-	return parsed.baseModelId;
+	return parsed.baseModelId + contextSuffix;
 }
 
 export function normalizeModelCatalog(models: CursorModelDescriptor[]): CursorModelDescriptor[] {
@@ -161,25 +206,64 @@ export function buildSdkModelSelection(
 	modelCatalog?: CursorModelDescriptor[],
 	thinkingLevel?: string,
 	fastValue?: string,
+	warn: (message: string) => void = (message) => console.warn(message),
 ): ModelSelection {
 	const normalizedModelId = normalizeModelId(modelId);
 	if (normalizedModelId === "auto") {
 		return { id: normalizedModelId };
 	}
 
-	const parameterModel = findParameterModelInCatalog(modelCatalog, normalizedModelId);
+	const baseModelId = stripContextVariant(normalizedModelId);
+	const parameterModel = findParameterModelInCatalog(modelCatalog, baseModelId);
 	const thinkingParameter = getThinkingParameter(parameterModel);
 	const params: NonNullable<ModelSelection["params"]> = [];
+	const selectedVariant =
+		parameterModel?.variants?.find((variant) => variant.modelId === baseModelId) ??
+		parameterModel?.variants?.find((variant) => variant.isDefault);
+	for (const param of selectedVariant?.params ?? []) {
+		if (param.id !== "context") params.push(param);
+	}
 	if (isValidThinkingLevel(parameterModel, thinkingLevel)) {
+		const index = params.findIndex((param) => param.id === thinkingParameter!.id);
+		if (index >= 0) params.splice(index, 1);
 		params.push({ id: thinkingParameter!.id, value: thinkingLevel! });
 	}
 	if (isValidFastValue(parameterModel, fastValue)) {
+		const index = params.findIndex((param) => param.id === FAST_PARAM_ID);
+		if (index >= 0) params.splice(index, 1);
 		params.push({ id: FAST_PARAM_ID, value: fastValue! });
 	}
+	if (normalizedModelId.endsWith(CONTEXT_1M_SUFFIX)) {
+		params.push({ id: "context", value: "1m" });
+	}
+	if (thinkingLevel && !isValidThinkingLevel(parameterModel, thinkingLevel)) {
+		warn(`[cursor-acp] Dropping invalid thinking value ${thinkingLevel} for ${baseModelId}`);
+	}
+	if (fastValue && !isValidFastValue(parameterModel, fastValue)) {
+		warn(`[cursor-acp] Dropping invalid fast value ${fastValue} for ${baseModelId}`);
+	}
+	const validParams = params.filter((param) => {
+		const valid =
+			parameterModel?.parameters?.some(
+				(parameter) =>
+					parameter.id === param.id &&
+					parameter.values.some((value) => value.value === param.value),
+			) ||
+			(selectedVariant?.params.some(
+				(variantParam) =>
+					variantParam.id === param.id && variantParam.value === param.value,
+			) &&
+				!parameterModel?.parameters?.some((parameter) => parameter.id === param.id));
+		if (!valid)
+			warn(
+				`[cursor-acp] Dropping invalid model parameter ${param.id}=${param.value} for ${baseModelId}`,
+			);
+		return valid;
+	});
 
 	return {
-		id: parameterModel?.modelId ?? normalizedModelId,
-		...(params.length > 0 ? { params } : {}),
+		id: baseModelId,
+		...(validParams.length > 0 ? { params: validParams } : {}),
 	};
 }
 
@@ -197,8 +281,8 @@ export function resolveModelId(
 	}
 
 	const parsed = parseLegacyModelId(modelId);
-	if (parsed?.thinking || parsed?.fast !== undefined) {
-		const catalog = withCliModelParameters(models);
+	if (parsed?.thinking || parsed?.fast !== undefined || parsed?.context) {
+		const catalog = withContextModelVariants(withCliModelParameters(models));
 		const base = resolveModelId(parsed.baseModelId, catalog) ?? parsed.baseModelId;
 		let resolved = base;
 		if (parsed.thinking) {
@@ -206,6 +290,11 @@ export function resolveModelId(
 		}
 		if (parsed.fast !== undefined) {
 			resolved = applyFastValue(catalog, resolved, String(parsed.fast)) ?? resolved;
+		}
+		if (parsed.context) {
+			const contextId = `${stripContextVariant(resolved)}${CONTEXT_1M_SUFFIX}`;
+			if (!catalog.some((model) => model.modelId === contextId)) return normalized;
+			resolved = contextId;
 		}
 		return catalog.find((model) => model.modelId === resolved)?.modelId ?? resolved;
 	}
@@ -832,6 +921,11 @@ export function applyFastValue(
 	if (fastValue !== "true" && fastValue !== "false") {
 		return undefined;
 	}
+	if (modelId.endsWith(CONTEXT_1M_SUFFIX)) {
+		const next = applyFastValue(modelCatalog, stripContextVariant(modelId), fastValue);
+		const contextId = next && `${next}${CONTEXT_1M_SUFFIX}`;
+		return modelCatalog.some((model) => model.modelId === contextId) ? contextId : undefined;
+	}
 	const descriptorVariant = findVariantByDescriptorParams(modelCatalog, modelId, {
 		[FAST_PARAM_ID]: fastValue,
 	});
@@ -851,6 +945,11 @@ export function applyThinkingValue(
 ): string | undefined {
 	if (!modelCatalog || !modelId) {
 		return undefined;
+	}
+	if (modelId.endsWith(CONTEXT_1M_SUFFIX)) {
+		const next = applyThinkingValue(modelCatalog, stripContextVariant(modelId), thinkingValue);
+		const contextId = next && `${next}${CONTEXT_1M_SUFFIX}`;
+		return modelCatalog.some((model) => model.modelId === contextId) ? contextId : undefined;
 	}
 	const parameterModel = findParameterModelInCatalog(modelCatalog, modelId);
 	const thinkingParameter = getThinkingParameter(parameterModel);

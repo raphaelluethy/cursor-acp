@@ -25,9 +25,12 @@ vi.mock("@cursor/sdk", () => ({
 	Cursor: { models: { list: sdkMocks.modelList } },
 }));
 
+vi.mock("../session-context.js", () => ({ buildFirstTurnContext: vi.fn(async () => "") }));
+
 function sdkRun(messages: unknown[] = []) {
 	return {
 		cancel: vi.fn(async () => undefined),
+		steer: vi.fn(async () => "complete_delivered" as const),
 		async *stream() {
 			for (const message of messages) yield message;
 		},
@@ -49,6 +52,13 @@ function sdkSession(id: string) {
 }
 
 describe("CursorSdkRunner", () => {
+	it("rejects an empty SDK catalog instead of inventing an Auto-only catalog", async () => {
+		sdkMocks.modelList.mockResolvedValueOnce([]);
+		await expect(new CursorSdkRunner("test-key", logger).listModels()).rejects.toThrow(
+			"Cursor SDK returned an empty model catalog",
+		);
+	});
+
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
@@ -67,6 +77,19 @@ describe("CursorSdkRunner", () => {
 		} else {
 			process.env[CURSOR_ACP_ATTRIBUTE_PRS_ENV] = originalPrAttribution;
 		}
+	});
+
+	it("sends text to the live SDK run", async () => {
+		const run = sdkRun();
+		const agent = sdkAgent("agent-steer");
+		agent.send.mockResolvedValue(run);
+		sdkMocks.agentCreate.mockResolvedValue(agent);
+		const runner = new CursorSdkRunner("test-key", logger);
+		const prompt = runner.startPrompt({ workspace: "/tmp/project", prompt: "work" });
+
+		expect(await prompt.steer?.("adjust")).toBe("complete_delivered");
+		expect(run.steer).toHaveBeenCalledWith("adjust");
+		await prompt.completed;
 	});
 
 	it("applies global attribution settings before creating the SDK agent", async () => {
@@ -104,9 +127,58 @@ describe("CursorSdkRunner", () => {
 
 		expect(sdkMocks.agentCreate).toHaveBeenCalledWith(
 			expect.objectContaining({
-				local: expect.objectContaining({ cwd: "/tmp/project", autoReview: true }),
+				local: expect.objectContaining({
+					cwd: "/tmp/project",
+					autoReview: true,
+					settingSources: ["user", "project"],
+				}),
 			}),
 		);
+	});
+
+	it("injects user context once on the first SDK send and preserves BB instructions", async () => {
+		const agent = sdkAgent("agent-context");
+		sdkMocks.agentCreate.mockResolvedValue(agent);
+		const contextBuilder = vi.fn(
+			async () => "<cursor_acp_user_context>Rules and skills</cursor_acp_user_context>",
+		);
+		const runner = new CursorSdkRunner("test-key", logger, contextBuilder);
+		const pending = await runner.createChat();
+
+		await runner.startPrompt({
+			workspace: "/tmp/project",
+			...sdkSession(pending),
+			prompt: "<system_instructions>BB</system_instructions>\n\nfirst request",
+		}).completed;
+		await runner.startPrompt({
+			workspace: "/tmp/project",
+			...sdkSession("agent-context"),
+			prompt: "second request",
+		}).completed;
+
+		expect(contextBuilder).toHaveBeenCalledOnce();
+		expect(agent.send).toHaveBeenNthCalledWith(
+			1,
+			"<system_instructions>BB</system_instructions>\n\n<cursor_acp_user_context>Rules and skills</cursor_acp_user_context>\n\nfirst request",
+			expect.any(Object),
+		);
+		expect(agent.send).toHaveBeenNthCalledWith(2, "second request", expect.any(Object));
+	});
+
+	it("resumes an SDK agent without repeating first-turn context", async () => {
+		const agent = sdkAgent("agent-resumed");
+		sdkMocks.agentResume.mockResolvedValue(agent);
+		const contextBuilder = vi.fn(async () => "Context that already exists in history");
+		const runner = new CursorSdkRunner("test-key", logger, contextBuilder);
+
+		await runner.startPrompt({
+			workspace: "/tmp/project",
+			...sdkSession("agent-resumed"),
+			prompt: "follow-up",
+		}).completed;
+
+		expect(contextBuilder).not.toHaveBeenCalled();
+		expect(agent.send).toHaveBeenCalledWith("follow-up", expect.any(Object));
 	});
 
 	it("resumes with Auto Review disabled for an approved retry without SDK force", async () => {

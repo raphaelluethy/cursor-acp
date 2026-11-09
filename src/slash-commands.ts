@@ -396,9 +396,10 @@ export function resolveCustomSlashCommandPrompt(
 
 export function resolveSkillSlashCommandPrompt(
 	commandName: string,
+	args: string,
 	skills: CustomSkill[],
 ): string | null {
-	return resolveSkillPrompt(commandName, skills);
+	return resolveSkillPrompt(commandName, args, skills);
 }
 
 export function builtInSlashCommandNames(): string[] {
