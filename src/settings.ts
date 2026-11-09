@@ -4,7 +4,7 @@ export const ADVERTISED_MODE_IDS = ["auto-review", "accept-edits", "yolo", "ask"
 
 export const LEGACY_MODE_ALIASES = {
 	default: "auto-review",
-	acceptEdits: "accept-edits",
+	acceptEdits: "auto-review",
 	agent: "auto-review",
 	autoReview: "auto-review",
 } as const;
@@ -26,18 +26,32 @@ export function isAgentSessionMode(modeId: SessionModeId): modeId is AgentSessio
 	);
 }
 
-export type BbPermissionMode = "full" | "accept-edits";
+export type PermissionModeSetting = "full" | "accept-edits";
 
-export function parseBbPermissionMode(args: readonly string[]): BbPermissionMode | undefined {
-	const flags = args.filter((arg) => arg.startsWith("--bb-permission-mode="));
-	if (flags.length === 0) return undefined;
-	if (flags.length !== 1) throw new Error("Duplicate --bb-permission-mode argument");
-	const value = flags[0]!.slice("--bb-permission-mode=".length);
-	if (value === "full" || value === "accept-edits") return value;
-	throw new Error(`Invalid BB permission mode: ${value}`);
+export const PERMISSION_MODE_ENV = "CURSOR_ACP_PERMISSION_MODE";
+
+/** `--bb-permission-mode` is accepted as an alias for clients that already pass it. */
+const PERMISSION_MODE_FLAGS = ["--permission-mode=", "--bb-permission-mode="] as const;
+
+/**
+ * Resolve the opt-in launch permission mode. A `--permission-mode=` flag wins over
+ * `CURSOR_ACP_PERMISSION_MODE`; with neither set, sessions keep their normal modes.
+ */
+export function resolvePermissionModeSetting(
+	args: readonly string[],
+	env: NodeJS.ProcessEnv = process.env,
+): PermissionModeSetting | undefined {
+	const flags = args.filter((arg) => PERMISSION_MODE_FLAGS.some((flag) => arg.startsWith(flag)));
+	if (flags.length > 1) throw new Error("Duplicate --permission-mode argument");
+	const raw = flags[0]
+		? flags[0].slice(flags[0].indexOf("=") + 1)
+		: env[PERMISSION_MODE_ENV]?.trim();
+	if (!raw) return undefined;
+	if (raw === "full" || raw === "accept-edits") return raw;
+	throw new Error(`Invalid permission mode: ${raw} (expected "full" or "accept-edits")`);
 }
 
-export function bbPermissionSessionMode(mode: BbPermissionMode): AgentSessionModeId {
+export function permissionSettingSessionMode(mode: PermissionModeSetting): AgentSessionModeId {
 	return mode === "full" ? "yolo" : "accept-edits";
 }
 

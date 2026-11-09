@@ -10,7 +10,8 @@ export function buildLocalAgentOptions(
 	return {
 		cwd,
 		autoReview,
-		sandboxOptions: { enabled: sandbox },
+		// Leave sandboxOptions unset otherwise so the user's sandbox.json still applies.
+		...(sandbox ? { sandboxOptions: { enabled: true } } : {}),
 		settingSources: [...LOCAL_SETTING_SOURCES],
 	};
 }

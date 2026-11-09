@@ -105,8 +105,8 @@ import { CustomSkill, loadCustomSkills } from "./skills.js";
 import {
 	AgentSessionModeId,
 	availableModes,
-	bbPermissionSessionMode,
-	BbPermissionMode,
+	permissionSettingSessionMode,
+	PermissionModeSetting,
 	DEFAULT_MODE_ID,
 	getEnvDefaultMode,
 	getEnvDefaultModel,
@@ -533,7 +533,7 @@ export interface SessionState {
 }
 
 export interface CursorAcpAgentOptions {
-	bbPermissionMode?: BbPermissionMode;
+	permissionMode?: PermissionModeSetting;
 	runner?: CursorRunner;
 	auth?: CursorAuthClient;
 	logger?: Logger;
@@ -560,7 +560,7 @@ export class CursorAcpAgent implements Agent {
 		callbacks: NativeSessionCallbacks,
 	) => NativeSessionBackend;
 	private readonly nativeCommand?: string;
-	private readonly bbPermissionMode?: BbPermissionMode;
+	private readonly permissionMode?: PermissionModeSetting;
 
 	constructor(
 		private readonly client: CursorAcpClient,
@@ -570,7 +570,7 @@ export class CursorAcpAgent implements Agent {
 		this.runner = options.runner ?? new CursorSdkRunner(undefined, this.logger);
 		this.auth = options.auth ?? new CursorAuth();
 		this.nativeCommand = options.nativeCommand;
-		this.bbPermissionMode = options.bbPermissionMode;
+		this.permissionMode = options.permissionMode;
 		this.createNativeClient =
 			options.createNativeClient ??
 			((nativeOptions, callbacks) => new CursorNativeAcpClient(nativeOptions, callbacks));
@@ -664,7 +664,7 @@ export class CursorAcpAgent implements Agent {
 			sessionId: params.sessionId,
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
-			preferredModeId: this.modeForBbPermission(meta.modeId),
+			preferredModeId: this.modeForPermissionSetting(meta.modeId),
 			preferredModelId: meta.modelId,
 			preferredThinkingLevel: meta.thinkingLevel,
 			preferredFastValue: meta.fastValue,
@@ -765,7 +765,7 @@ export class CursorAcpAgent implements Agent {
 			sessionId: params.sessionId,
 			cwd: params.cwd,
 			mcpServers: params.mcpServers,
-			preferredModeId: this.modeForBbPermission(meta.modeId),
+			preferredModeId: this.modeForPermissionSetting(meta.modeId),
 			preferredModelId: meta.modelId,
 			preferredThinkingLevel: meta.thinkingLevel,
 			preferredFastValue: meta.fastValue,
@@ -1149,7 +1149,7 @@ export class CursorAcpAgent implements Agent {
 		if (
 			firstAttempt.stopReason === "end_turn" &&
 			(session.modeId === "default" || session.modeId === "auto-review") &&
-			this.bbPermissionMode !== "accept-edits" &&
+			this.permissionMode !== "accept-edits" &&
 			firstAttempt.rejectedToolCalls.length > 0
 		) {
 			const approved = await Promise.race([
@@ -1469,7 +1469,7 @@ export class CursorAcpAgent implements Agent {
 		warmNativeBackend?: boolean;
 	}): Promise<ExtendedNewSessionResponse> {
 		const modeId =
-			this.modeForBbPermission(params.preferredModeId ?? this.defaultModeId) ??
+			this.modeForPermissionSetting(params.preferredModeId ?? this.defaultModeId) ??
 			DEFAULT_MODE_ID;
 		const configuredModelId = params.preferredModelId ?? this.defaultModelId;
 		const configuredThinkingLevel = params.preferredThinkingLevel ?? this.defaultThinkingLevel;
@@ -1485,8 +1485,8 @@ export class CursorAcpAgent implements Agent {
 			configuredFastValue,
 			lastAgentModeId: isAgentSessionMode(modeId)
 				? modeId
-				: this.bbPermissionMode
-					? bbPermissionSessionMode(this.bbPermissionMode)
+				: this.permissionMode
+					? permissionSettingSessionMode(this.permissionMode)
 					: "auto-review",
 			cancelled: false,
 			nativeAvailableCommands: [],
@@ -2229,13 +2229,11 @@ export class CursorAcpAgent implements Agent {
 		if (forceRetry) {
 			return {
 				reviewPolicy:
-					this.bbPermissionMode === "accept-edits"
-						? "workspace-sandbox"
-						: "run-everything",
+					this.permissionMode === "accept-edits" ? "workspace-sandbox" : "run-everything",
 			};
 		}
 		const reviewPolicy =
-			this.bbPermissionMode === "accept-edits" ? "sandbox-auto-review" : "auto-review";
+			this.permissionMode === "accept-edits" ? "sandbox-auto-review" : "auto-review";
 
 		switch (session.modeId) {
 			case "plan":
@@ -2646,8 +2644,10 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	private async applySessionMode(session: SessionState, modeId: SessionModeId): Promise<void> {
-		if (this.bbPermissionMode === "accept-edits" && modeId === "yolo") {
-			throw RequestError.invalidParams("Yolo requires BB Full Access");
+		if (this.permissionMode === "accept-edits" && modeId === "yolo") {
+			throw RequestError.invalidParams(
+				"Yolo is unavailable while the accept-edits permission mode setting is active",
+			);
 		}
 		const canSetNativeMode =
 			session.nativeClient?.alive &&
@@ -2663,9 +2663,9 @@ export class CursorAcpAgent implements Agent {
 		await this.persistSessionMeta(session);
 	}
 
-	private modeForBbPermission(modeId?: SessionModeId): SessionModeId | undefined {
-		if (!this.bbPermissionMode || modeId === "ask" || modeId === "plan") return modeId;
-		return bbPermissionSessionMode(this.bbPermissionMode);
+	private modeForPermissionSetting(modeId?: SessionModeId): SessionModeId | undefined {
+		if (!this.permissionMode || modeId === "ask" || modeId === "plan") return modeId;
+		return permissionSettingSessionMode(this.permissionMode);
 	}
 
 	private setSessionModeState(session: SessionState, modeId: SessionModeId): void {

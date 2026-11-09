@@ -68,19 +68,14 @@ Older builds accepted `bypassPermissions` and `autoRunAllCommands` as synonyms f
 - **What it does**: Creates/resumes the local SDK agent with Auto Review disabled. This is the SDK's headless “run everything” behavior.
 - **Configuration**: Set `default_config_options.mode` to `yolo` or choose Yolo in the mode picker. Do not use removed aliases such as `bypassPermissions` or `autoRunAllCommands`.
 
-### BB permission mode
+### Permission mode setting (opt-in)
 
-BB's ACP `permissionCli` can pass its permission choice at process launch:
+Clients that decide permissions at launch can pin the agent mode with a CLI flag or env var. Without either, nothing changes.
 
-```json
-"permissionCli": {
-  "full": ["--bb-permission-mode=full"],
-  "workspaceWrite": ["--bb-permission-mode=accept-edits"],
-  "insertAfterArgs": 1
-}
-```
+- `--permission-mode=full` or `CURSOR_ACP_PERMISSION_MODE=full`: agent sessions run in Yolo (Auto Review off).
+- `--permission-mode=accept-edits` or `CURSOR_ACP_PERMISSION_MODE=accept-edits`: agent sessions run in **Accept edits** (Cursor's local sandbox on, Auto Review off). Auto-review turns also keep the sandbox enabled, an ACP-approved retry stays sandboxed, and switching to Yolo is rejected.
 
-Use `insertAfterArgs: 1` when the agent command is `node` and its first argument is `dist/index.js`. BB Full Access starts Cursor in Yolo with Auto Review and the local sandbox disabled. BB Accept Edits starts Cursor with the local sandbox enabled and Auto Review disabled. Cursor Smart Auto Review is a separate mode with classifier decisions; it does not implement BB Accept Edits. Restoring a session applies BB's current permission choice to agent mode while keeping Ask and Plan modes. A running BB ACP bridge must rebuild the session after a permission change so the next turn receives new launch arguments.
+The flag wins over the env var, and `--bb-permission-mode=` is accepted as an alias. New and restored sessions use the configured mode, except that Ask and Plan are kept. Accept edits needs a platform where Cursor's local sandbox is supported. The **Accept edits** mode can also be picked directly in the mode selector without the setting. In every other mode, cursor-acp does not override the SDK's sandbox options, so `~/.cursor/sandbox.json` keeps applying.
 
 The same notice is linked from [`docs/breaking-changes.md`](docs/breaking-changes.md).
 

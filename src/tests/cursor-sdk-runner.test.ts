@@ -212,7 +212,7 @@ describe("CursorSdkRunner", () => {
 		);
 	});
 
-	it("resumes a full access agent inside the sandbox when BB switches to accept edits", async () => {
+	it("resumes a full access agent inside the sandbox when switching to accept edits", async () => {
 		const full = sdkAgent("agent-existing");
 		const restricted = sdkAgent("agent-existing");
 		sdkMocks.agentResume.mockResolvedValueOnce(full).mockResolvedValueOnce(restricted);
@@ -244,7 +244,7 @@ describe("CursorSdkRunner", () => {
 		);
 	});
 
-	it("keeps the sandbox enabled when Auto Review is selected under BB Accept Edits", async () => {
+	it("keeps the sandbox enabled when Auto Review is selected under the accept-edits setting", async () => {
 		const agent = sdkAgent("agent-sandbox-reviewed");
 		sdkMocks.agentCreate.mockResolvedValue(agent);
 		const runner = new CursorSdkRunner("test-key", logger);
