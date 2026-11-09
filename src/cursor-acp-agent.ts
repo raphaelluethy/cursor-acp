@@ -1143,10 +1143,9 @@ export class CursorAcpAgent implements Agent {
 			pendingNativeSessionId: params.preferredBackendSessionId,
 		};
 
-		this.sessions[session.sessionId] = session;
-
 		await this.loadSessionSlashExtensions(session);
 		const fallbackModels = await this.getAvailableModels(session);
+		this.sessions[session.sessionId] = session;
 		session.fallbackSessionModels = fallbackModels;
 		await this.emitOrQueueNotification(session, {
 			sessionId: session.sessionId,
@@ -1595,12 +1594,7 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	private async getAvailableModels(session: SessionState) {
-		let listed: CursorModelDescriptor[] = [];
-		try {
-			listed = await this.runner.listModels();
-		} catch (error) {
-			this.logger.error("[cursor-acp] Unable to list models", error);
-		}
+		let listed = await this.runner.listModels();
 
 		listed = withCliModelParameters(mergeModelCatalogs(listed, session.modelCatalog));
 		session.modelCatalog = listed;

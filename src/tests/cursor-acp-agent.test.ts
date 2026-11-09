@@ -249,6 +249,7 @@ function createAgentTestHarness(
 		createSessionBlocker?: Promise<void>;
 		createSessionBlockers?: Array<Promise<void> | undefined>;
 		models?: CursorModelDescriptor[];
+		listModels?: () => Promise<CursorModelDescriptor[]>;
 	} = {},
 ) {
 	const backends: FakeNativeBackend[] = [];
@@ -267,6 +268,7 @@ function createAgentTestHarness(
 			return "legacy-chat-1";
 		},
 		async listModels() {
+			if (backendOptions.listModels) return await backendOptions.listModels();
 			return (
 				backendOptions.models ?? [
 					{ modelId: "auto", name: "Auto", current: true },
@@ -408,6 +410,24 @@ let tempConfigDir: string | undefined;
 beforeEach(async () => {
 	tempConfigDir = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-config-"));
 	process.env.CURSOR_ACP_CONFIG_DIR = tempConfigDir;
+});
+
+describe("model discovery failures", () => {
+	it("rejects a failed discovery instead of advertising Auto and recovers on retry", async () => {
+		const listModels = vi
+			.fn<() => Promise<CursorModelDescriptor[]>>()
+			.mockRejectedValueOnce(new Error("Model catalog unavailable"))
+			.mockResolvedValueOnce([{ modelId: "composer-2.5", name: "Composer 2.5" }]);
+		const { agent } = createAgentTestHarness({ listModels });
+		await agent.initialize(initRequest());
+		await expect(agent.newSession(newSessionRequest())).rejects.toThrow(
+			"Model catalog unavailable",
+		);
+		const session = await agent.newSession(newSessionRequest());
+		expect(session.models?.availableModels).toEqual(
+			expect.arrayContaining([expect.objectContaining({ modelId: "composer-2.5" })]),
+		);
+	});
 });
 
 afterEach(async () => {

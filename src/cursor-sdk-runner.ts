@@ -96,6 +96,9 @@ export class CursorSdkRunner implements CursorRunner {
 
 	async listModels(): Promise<CursorModelDescriptor[]> {
 		const models = await Cursor.models.list(this.apiKey ? { apiKey: this.apiKey } : undefined);
+		if (models.length === 0) {
+			throw new Error("Cursor SDK returned an empty model catalog");
+		}
 		return ensureAutoModel(
 			models.map((model) => ({
 				modelId: model.id,
