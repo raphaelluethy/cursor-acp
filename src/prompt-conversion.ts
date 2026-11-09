@@ -99,6 +99,16 @@ export type ParsedSlashCommand =
 			raw: string;
 	  };
 
+export function splitSystemInstructionsPrefix(text: string): { prefix: string; prompt: string } {
+	if (!text.startsWith("<system_instructions>")) return { prefix: "", prompt: text };
+	const closing = "</system_instructions>";
+	const end = text.indexOf(closing);
+	if (end < 0) return { prefix: "", prompt: text };
+	const after = text.slice(end + closing.length);
+	const prompt = after.trimStart();
+	return { prefix: text.slice(0, text.length - prompt.length), prompt };
+}
+
 export function parseLeadingSlashCommand(text: string): ParsedSlashCommand {
 	const trimmed = text.trim();
 	if (!trimmed.startsWith("/")) {
