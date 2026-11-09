@@ -445,6 +445,63 @@ beforeEach(async () => {
 	process.env.CURSOR_ACP_CONFIG_DIR = tempConfigDir;
 });
 
+describe("1M context model selection", () => {
+	it("advertises a 1M entry and restores a /model selection after load", async () => {
+		const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-context-state-"));
+		process.env.CURSOR_ACP_CONFIG_DIR = tempRoot;
+		const models: CursorModelDescriptor[] = [
+			{ modelId: "auto", name: "Auto", current: true },
+			{
+				modelId: "claude-sonnet-4-6",
+				name: "Claude Sonnet 4.6",
+				parameters: [{ id: "context", values: [{ value: "300k" }, { value: "1m" }] }],
+			},
+		];
+		try {
+			const first = createAgentTestHarness({ models });
+			await first.agent.initialize(initRequest());
+			const created = await first.agent.newSession(
+				newSessionRequest({ cwd: "/tmp/context-project" }),
+			);
+			expect(created.models?.availableModels.map((model) => model.modelId)).toContain(
+				"claude-sonnet-4-6[context=1m]",
+			);
+			await first.agent.prompt({
+				sessionId: created.sessionId,
+				prompt: [{ type: "text", text: "/model auto[context=1m]" }],
+			});
+			expect(agentTestAccess(first.agent).sessions[created.sessionId]?.modelId).toBe("auto");
+			await first.agent.prompt({
+				sessionId: created.sessionId,
+				prompt: [{ type: "text", text: "/model claude-sonnet-4-6[context=1m]" }],
+			});
+			expect(agentTestAccess(first.agent).sessions[created.sessionId]?.modelId).toBe(
+				"claude-sonnet-4-6[context=1m]",
+			);
+
+			const second = createAgentTestHarness({ models });
+			await second.agent.initialize(initRequest());
+			const loaded = await second.agent.loadSession({
+				sessionId: created.sessionId,
+				cwd: "/tmp/context-project",
+				mcpServers: [],
+			});
+			expect(loaded.models?.currentModelId).toBe("claude-sonnet-4-6[context=1m]");
+			expect(
+				loaded.models?.availableModels.filter(
+					(model) => model.modelId === "claude-sonnet-4-6[context=1m]",
+				),
+			).toHaveLength(1);
+			expect(loaded.configOptions?.find((option) => option.id === "model")).toMatchObject({
+				currentValue: "claude-sonnet-4-6[context=1m]",
+			});
+		} finally {
+			delete process.env.CURSOR_ACP_CONFIG_DIR;
+			await rm(tempRoot, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("model discovery failures", () => {
 	it("rejects a failed discovery instead of advertising Auto and recovers on retry", async () => {
 		const listModels = vi

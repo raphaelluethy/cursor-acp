@@ -9,6 +9,7 @@ import {
 	normalizeModelId,
 	resolveModelId,
 	withCliModelParameters,
+	withContextModelVariants,
 } from "../model-id.js";
 
 describe("model id normalization", () => {
@@ -164,5 +165,103 @@ describe("model id normalization", () => {
 				{ id: "fast", value: "true" },
 			],
 		});
+	});
+});
+
+describe("1M context model variants", () => {
+	const catalog = withContextModelVariants([
+		{
+			modelId: "claude-sonnet-4-6",
+			name: "Claude Sonnet 4.6",
+			parameters: [
+				{ id: "context", values: [{ value: "300k" }, { value: "1m" }] },
+				{ id: "thinking", values: [{ value: "false" }, { value: "true" }] },
+				{ id: "effort", values: [{ value: "low" }, { value: "high" }] },
+				{ id: "fast", values: [{ value: "false" }, { value: "true" }] },
+			],
+			variants: [{ isDefault: true, params: [{ id: "effort", value: "high" }] }],
+		},
+		{ modelId: "composer-2.5", name: "Composer 2.5" },
+		{
+			modelId: "limited",
+			name: "Limited",
+			parameters: [{ id: "context", values: [{ value: "300k" }] }],
+		},
+		{ modelId: "auto", name: "Auto" },
+	]);
+
+	it("adds only catalog-supported 1M entries and keeps normal entries", () => {
+		expect(catalog.map((model) => model.modelId)).toEqual([
+			"claude-sonnet-4-6",
+			"claude-sonnet-4-6[context=1m]",
+			"composer-2.5",
+			"limited",
+			"auto",
+		]);
+		expect(catalog[1]?.name).toBe("Claude Sonnet 4.6 (1M)");
+		expect(withContextModelVariants(catalog).map((model) => model.modelId)).toEqual(
+			catalog.map((model) => model.modelId),
+		);
+	});
+
+	it("maps the 1M entry to the base SDK id while retaining selected parameters", () => {
+		expect(
+			buildSdkModelSelection("claude-sonnet-4-6[context=1m]", catalog, "true", "true"),
+		).toEqual({
+			id: "claude-sonnet-4-6",
+			params: [
+				{ id: "effort", value: "high" },
+				{ id: "thinking", value: "true" },
+				{ id: "fast", value: "true" },
+				{ id: "context", value: "1m" },
+			],
+		});
+		expect(buildSdkModelSelection("claude-sonnet-4-6", catalog).params).toEqual([
+			{ id: "effort", value: "high" },
+		]);
+	});
+
+	it("forwards reasoning_effort and SDK variant-only params, rejecting invalid values", () => {
+		const warnings: string[] = [];
+		const models = [
+			{
+				modelId: "grok-4.7",
+				name: "Grok 4.7",
+				parameters: [
+					{ id: "reasoning_effort", values: [{ value: "low" }, { value: "high" }] },
+				],
+				variants: [
+					{
+						isDefault: true,
+						params: [
+							{ id: "cyber", value: "false" },
+							{ id: "reasoning_effort", value: "invalid" },
+						],
+					},
+				],
+			},
+		];
+		expect(
+			buildSdkModelSelection("grok-4.7", models, undefined, undefined, (message) =>
+				warnings.push(message),
+			),
+		).toEqual({ id: "grok-4.7", params: [{ id: "cyber", value: "false" }] });
+		expect(warnings).toEqual([expect.stringContaining("reasoning_effort=invalid")]);
+		expect(buildSdkModelSelection("grok-4.7", models, "high").params).toContainEqual({
+			id: "reasoning_effort",
+			value: "high",
+		});
+	});
+
+	it("resolves /model bracket syntax and retains context across control changes", () => {
+		expect(resolveModelId("claude-sonnet-4-6[context=1m]", catalog)).toBe(
+			"claude-sonnet-4-6[context=1m]",
+		);
+		expect(resolveModelId("composer-2.5[context=1m]", catalog)).toBe(
+			"composer-2.5[context=1m]",
+		);
+		expect(applyThinkingValue(catalog, "claude-sonnet-4-6[context=1m]", "true")).toBe(
+			"claude-sonnet-4-6[context=1m]",
+		);
 	});
 });

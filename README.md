@@ -20,7 +20,8 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - **ACP permission fallback**: A call stopped by Auto Review is surfaced to the client. “Allow once” retries that turn with Auto Review disabled; “Always allow” switches the session to Yolo.
 - **Correct SDK mode lifecycle**: Auto Review is an agent-level SDK option. Switching review policy closes and resumes the same SDK agent with the new policy; the SDK's unrelated crash-recovery `force` flag is never used as an approval bypass.
 - **Stable prompt lifecycle**: Standalone Cursor transport diagnostics fail the ACP turn instead of being treated as successful replies. Cancellation drains final SDK events and retires an unresponsive agent after a bounded wait.
-- **Model parameters**: Canonical SDK model IDs, thinking/reasoning/effort levels, fast values, and variants flow into SDK model selections. The adapter keeps the catalog's original parameter ids.
+- **Model parameters**: Canonical SDK model IDs, thinking/reasoning/reasoning_effort/effort levels, fast values, and catalog variants flow into SDK model selections. The adapter keeps the catalog's original parameter ids and validates values before sending them.
+- **1M context choice (Max mode equivalent)**: Models whose SDK catalog offers `context=1m` also appear as `<model-id>[context=1m]` (displayed with `(1M)`). Select that entry in the ACP model picker or with `/model <model-id>[context=1m]`. The choice is per session and survives session loading. The ordinary entry leaves `context` unset, so Cursor applies its default. Auto and models without `context=1m` have no 1M entry. A 1M context may increase usage costs; availability and billing are determined by Cursor.
 - **MCP and images**: ACP-provided stdio/HTTP/SSE MCP servers and image chunks are forwarded to the SDK.
 - **Agent, Plan, and Ask**: Plan uses the SDK's `plan` send mode. Ask creates a no-tools SDK agent.
 
