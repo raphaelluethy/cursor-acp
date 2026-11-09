@@ -1,11 +1,25 @@
 import type { SDKUsageMessage } from "@cursor/sdk";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { recordSdkUsage } from "../cursor-sdk-usage.js";
+import { recordSdkUsage, resolveUsageLedgerPath } from "../cursor-sdk-usage.js";
 
 const directories: string[] = [];
+
+it("only enables the usage ledger when CURSOR_ACP_USAGE_LEDGER opts in", () => {
+	expect(resolveUsageLedgerPath({})).toBeUndefined();
+	expect(resolveUsageLedgerPath({ CURSOR_ACP_USAGE_LEDGER: "" })).toBeUndefined();
+	expect(resolveUsageLedgerPath({ CURSOR_ACP_USAGE_LEDGER: "false" })).toBeUndefined();
+	expect(resolveUsageLedgerPath({ CURSOR_ACP_USAGE_LEDGER: "0" })).toBeUndefined();
+	expect(resolveUsageLedgerPath({ CURSOR_ACP_USAGE_LEDGER: "1" })).toMatch(/usage\.jsonl$/);
+	expect(resolveUsageLedgerPath({ CURSOR_ACP_USAGE_LEDGER: "/var/tmp/u.jsonl" })).toBe(
+		"/var/tmp/u.jsonl",
+	);
+	expect(resolveUsageLedgerPath({ CURSOR_ACP_USAGE_LEDGER: "~/.cursor/usage.jsonl" })).toBe(
+		join(homedir(), ".cursor", "usage.jsonl"),
+	);
+});
 afterEach(async () => {
 	await Promise.all(
 		directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),

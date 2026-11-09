@@ -14,6 +14,7 @@ const sdkMocks = vi.hoisted(() => ({
 	agentResume: vi.fn(),
 	modelList: vi.fn(),
 	recordUsage: vi.fn(async () => undefined),
+	usageLedgerPath: vi.fn((): string | undefined => "/tmp/ledger/usage.jsonl"),
 }));
 
 const logger = { log() {}, error() {} };
@@ -27,7 +28,10 @@ vi.mock("@cursor/sdk", () => ({
 }));
 
 vi.mock("../session-context.js", () => ({ buildFirstTurnContext: vi.fn(async () => "") }));
-vi.mock("../cursor-sdk-usage.js", () => ({ recordSdkUsage: sdkMocks.recordUsage }));
+vi.mock("../cursor-sdk-usage.js", () => ({
+	recordSdkUsage: sdkMocks.recordUsage,
+	resolveUsageLedgerPath: sdkMocks.usageLedgerPath,
+}));
 
 function sdkRun(messages: unknown[] = []) {
 	return {
@@ -105,9 +109,26 @@ describe("CursorSdkRunner", () => {
 			).exitCode,
 		).toBe(0);
 		expect(sdkMocks.recordUsage.mock.calls).toEqual([
-			[first, 0, "resolved-model", "/tmp/project"],
-			[second, 1, "resolved-model", "/tmp/project"],
+			[first, 0, "resolved-model", "/tmp/project", "/tmp/ledger/usage.jsonl"],
+			[second, 1, "resolved-model", "/tmp/project", "/tmp/ledger/usage.jsonl"],
 		]);
+	});
+
+	it("records nothing when the usage ledger setting is off", async () => {
+		sdkMocks.usageLedgerPath.mockReturnValueOnce(undefined);
+		sdkMocks.agentCreate.mockResolvedValue(
+			sdkAgent("agent-usage", [
+				{
+					type: "usage",
+					agent_id: "agent-usage",
+					run_id: "run-usage",
+					usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+				},
+			]),
+		);
+		const runner = new CursorSdkRunner("test-key", logger);
+		await runner.startPrompt({ workspace: "/tmp/project", prompt: "work" }).completed;
+		expect(sdkMocks.recordUsage).not.toHaveBeenCalled();
 	});
 
 	it("does not record unknown consumption or let a ledger failure fail the prompt", async () => {
