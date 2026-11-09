@@ -174,6 +174,12 @@ async function writeSteerAttachment(
 	tmpDir: string,
 ): Promise<SteerAttachmentFile> {
 	const dir = steerSessionDir(sessionId, tmpDir);
+	// TODO(review): on Linux with a shared /tmp, `recursive` also creates the
+	// shared root (cursor-acp-attachments) as 0700 owned by the first user, so
+	// other users on the host get EACCES. If another user pre-creates the root
+	// they own it and could swap a session dir for a symlink between chmod and
+	// writeFile. Use a per-user root (e.g. include the uid) or mkdtemp, and
+	// verify ownership of the root before writing.
 	await mkdir(dir, { recursive: true, mode: 0o700 });
 	await chmod(dir, 0o700);
 	const file = path.join(
@@ -205,6 +211,9 @@ export async function cleanupSessionSteerAttachments(
  * `maxAgeMs`. Covers sessions whose adapter process ended without an explicit
  * close. Returns the number of directories removed.
  */
+// TODO(review): the mtime sweep can delete the directory of a session that is
+// still live in another adapter process but has not written an attachment in
+// the last 24h.
 export async function cleanupExpiredSteerAttachments(
 	maxAgeMs: number = STEER_ATTACHMENT_MAX_AGE_MS,
 	tmpDir: string = os.tmpdir(),

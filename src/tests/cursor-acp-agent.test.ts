@@ -23,7 +23,11 @@ import { CursorAcpAgent } from "../cursor-acp-agent.js";
 import type { CursorAcpClient } from "../cursor-acp-client.js";
 import type { RunPromptOptions } from "../cursor-cli-runner.js";
 import { steerSessionDir } from "../steer-attachments.js";
-import { recordAssistantMessage, recordUserMessage } from "../session-storage.js";
+import {
+	recordAssistantMessage,
+	recordSessionMeta,
+	recordUserMessage,
+} from "../session-storage.js";
 import type { CursorModelDescriptor } from "../slash-commands.js";
 import {
 	agentTestAccess,
@@ -257,6 +261,7 @@ function createAgentTestHarness(
 		createSessionBlockers?: Array<Promise<void> | undefined>;
 		models?: CursorModelDescriptor[];
 		supportsSteering?: boolean;
+		listModels?: () => Promise<CursorModelDescriptor[]>;
 	} = {},
 ) {
 	const backends: FakeNativeBackend[] = [];
@@ -282,6 +287,7 @@ function createAgentTestHarness(
 			return "legacy-chat-1";
 		},
 		async listModels() {
+			if (backendOptions.listModels) return await backendOptions.listModels();
 			return (
 				backendOptions.models ?? [
 					{ modelId: "auto", name: "Auto", current: true },
@@ -437,6 +443,24 @@ let tempConfigDir: string | undefined;
 beforeEach(async () => {
 	tempConfigDir = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-config-"));
 	process.env.CURSOR_ACP_CONFIG_DIR = tempConfigDir;
+});
+
+describe("model discovery failures", () => {
+	it("rejects a failed discovery instead of advertising Auto and recovers on retry", async () => {
+		const listModels = vi
+			.fn<() => Promise<CursorModelDescriptor[]>>()
+			.mockRejectedValueOnce(new Error("Model catalog unavailable"))
+			.mockResolvedValueOnce([{ modelId: "composer-2.5", name: "Composer 2.5" }]);
+		const { agent } = createAgentTestHarness({ listModels });
+		await agent.initialize(initRequest());
+		await expect(agent.newSession(newSessionRequest())).rejects.toThrow(
+			"Model catalog unavailable",
+		);
+		const session = await agent.newSession(newSessionRequest());
+		expect(session.models?.availableModels).toEqual(
+			expect.arrayContaining([expect.objectContaining({ modelId: "composer-2.5" })]),
+		);
+	});
 });
 
 afterEach(async () => {
@@ -683,7 +707,7 @@ describe("CursorAcpAgent", () => {
 		}
 	});
 
-	it("expands custom slash commands and skills before prompting Cursor", async () => {
+	it("expands custom slash commands and passes skill path and trailing request to Cursor", async () => {
 		const workspace = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-prompts-"));
 		await mkdir(path.join(workspace, ".cursor", "commands"), { recursive: true });
 		await mkdir(path.join(workspace, ".cursor", "skills", "workspace-skill"), {
@@ -728,12 +752,22 @@ describe("CursorAcpAgent", () => {
 			});
 			await agent.prompt({
 				sessionId: session.sessionId,
-				prompt: [{ type: "text", text: "/workspace-skill" }],
+				prompt: [{ type: "text", text: "/workspace-skill inspect deck.html" }],
+			});
+			await agent.prompt({
+				sessionId: session.sessionId,
+				prompt: [
+					{
+						type: "text",
+						text: "<system_instructions>BB context</system_instructions>\n\n/workspace-skill check slides.html",
+					},
+				],
 			});
 
 			expect(legacyPromptCalls.map((call) => call.promptText)).toEqual([
 				"Review these changes: src",
-				"Skill body",
+				`Skill file: ${path.join(workspace, ".cursor", "skills", "workspace-skill", "SKILL.md")}\nSkill directory: ${path.join(workspace, ".cursor", "skills", "workspace-skill")}\n\nSkill body\n\ninspect deck.html`,
+				`<system_instructions>BB context</system_instructions>\n\nSkill file: ${path.join(workspace, ".cursor", "skills", "workspace-skill", "SKILL.md")}\nSkill directory: ${path.join(workspace, ".cursor", "skills", "workspace-skill")}\n\nSkill body\n\ncheck slides.html`,
 			]);
 		} finally {
 			await rm(workspace, { recursive: true, force: true });
@@ -865,7 +899,7 @@ describe("CursorAcpAgent", () => {
 		await expect(
 			Promise.race([
 				newSessionPromise.then((session) => session.models?.currentModelId),
-				new Promise((resolve) => setTimeout(() => resolve("blocked"), 20)),
+				new Promise((resolve) => setTimeout(() => resolve("blocked"), 200)),
 			]),
 		).resolves.toBe("auto");
 		expect(backends).toHaveLength(0);
@@ -4347,6 +4381,67 @@ describe("CursorAcpAgent", () => {
 			expect(
 				client.updates.filter((u) => u.update?.sessionUpdate === "agent_message_chunk"),
 			).toHaveLength(1);
+		} finally {
+			delete process.env.CURSOR_ACP_CONFIG_DIR;
+			await rm(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves backendSessionId when resuming a session via loadSession", async () => {
+		const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-"));
+		process.env.CURSOR_ACP_CONFIG_DIR = tempRoot;
+
+		try {
+			await recordSessionMeta("/tmp/project", "session-load-test", {
+				backendSessionId: "agent-persisted-sdk-1",
+				modelId: "gpt-5.4-medium",
+			});
+
+			const { agent, legacyPromptCalls } = createAgentTestHarness();
+			await agent.initialize(initRequest());
+			await agent.loadSession({
+				sessionId: "session-load-test",
+				cwd: "/tmp/project",
+				mcpServers: [],
+			});
+
+			await agent.prompt({
+				sessionId: "session-load-test",
+				prompt: [{ type: "text", text: "next question" }],
+			});
+
+			expect(legacyPromptCalls).toHaveLength(1);
+			expect(legacyPromptCalls[0]!.backendSessionId).toBe("agent-persisted-sdk-1");
+		} finally {
+			delete process.env.CURSOR_ACP_CONFIG_DIR;
+			await rm(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves backendSessionId when resuming a session via resumeSession", async () => {
+		const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-agent-"));
+		process.env.CURSOR_ACP_CONFIG_DIR = tempRoot;
+
+		try {
+			await recordSessionMeta("/tmp/project", "session-resume-test", {
+				backendSessionId: "agent-persisted-sdk-2",
+				modelId: "gpt-5.4-medium",
+			});
+
+			const { agent, legacyPromptCalls } = createAgentTestHarness();
+			await agent.initialize(initRequest());
+			await (agent as unknown as { resumeSession: Function }).resumeSession({
+				sessionId: "session-resume-test",
+				cwd: "/tmp/project",
+			});
+
+			await agent.prompt({
+				sessionId: "session-resume-test",
+				prompt: [{ type: "text", text: "next question" }],
+			});
+
+			expect(legacyPromptCalls).toHaveLength(1);
+			expect(legacyPromptCalls[0]!.backendSessionId).toBe("agent-persisted-sdk-2");
 		} finally {
 			delete process.env.CURSOR_ACP_CONFIG_DIR;
 			await rm(tempRoot, { recursive: true, force: true });

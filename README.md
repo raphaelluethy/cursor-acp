@@ -30,6 +30,7 @@ This is an `ai-assisted` personal project aimed at bringing Cursor's agent into 
 - **Session persistence & history replay**: Stores visible history locally and replays it on resume/load
 - **Session listing**: Lists past local sessions with optional cwd filtering and pagination
 - **Model listing and selection**: `/model` and ACP config options use the SDK catalog.
+- **Model discovery failures**: Failed or empty SDK model listings fail session initialization instead of advertising an Auto-only catalog, so clients can retain their last successful catalog and retry discovery.
 - **ACP 1.4 controls**: Clients that advertise boolean config support receive Fast and on/off Thinking parameters as native toggles; older clients receive a select fallback. Multi-level thinking/reasoning/effort parameters remain selectors. After `session/set_config_option`, the adapter sends `config_option_update` so dependent Fast and Thinking controls appear immediately.
 - **SDK authentication**: `/login`, `/logout`, `/status`, `CURSOR_API_KEY`, and ACP terminal authentication use Cursor SDK credentials. Browser login is stored under `~/.cursor/sdk/auth.json`.
 - **Optional Yolo mode** (`yolo`): Disables Auto Review for unrestricted local SDK execution.
@@ -80,6 +81,8 @@ The same notice is linked from [`docs/breaking-changes.md`](docs/breaking-change
 | `/logout` | Sign out of Cursor                     |
 
 Project and user slash commands/skills discovered by the adapter are added to the ACP command list.
+Skills in `.agents/skills`, `.cursor/skills`, and the user-level `.cursor/skills-cursor` may be linked directories or files. Project `.agents/skills` and `.cursor/skills` are discovered from the session directory up to its Git root. Invoking `/skill-name request` sends the skill text, its resolved file path, and the request to Cursor.
+Local SDK sessions load user rules from `~/.agents/AGENTS.md` on the first turn. Linked skills missing from the SDK's own discovery are listed for automatic use when they do not set `disable-model-invocation: true`; adapter-discovered skills remain available through `/skill-name`.
 
 ## Installation
 
@@ -266,7 +269,7 @@ Oxlint and Oxfmt use their repository-level configurations. Source indentation u
 - `auto-review`, `yolo`, `ask`, and `plan` are the advertised modes
 - `default`, `acceptEdits`, `agent`, and `autoReview` are accepted as compatibility aliases for **`auto-review`**. For Yolo, use **`yolo`**—`bypassPermissions` and `autoRunAllCommands` are no longer accepted (see **Legacy Yolo mode name aliases removed**)
 - `debug` is not exposed
-- SDK user settings are loaded from Cursor's user setting source.
+- SDK user and project settings are loaded from their respective local setting sources. User rules in `~/.agents/AGENTS.md` are supplied separately on the first turn.
 
 ## Project Structure
 
@@ -277,6 +280,8 @@ src/
 ├── cursor-acp-agent.ts   # ACP lifecycle, persistence, and permissions
 ├── cursor-runner.ts      # Prompt execution interface
 ├── cursor-sdk-runner.ts  # Cursor SDK implementation
+├── session-context.ts    # First-turn user rules and supplemental skills
+├── skills.ts             # Skill discovery and slash expansion
 ├── model-id.ts           # SDK model ids, thinking/reasoning/effort, and fast variants
 ├── cursor-cli-config.ts  # Global CLI attribution and config paths
 ├── cursor-sdk-event-adapter.ts # SDK-to-ACP event compatibility

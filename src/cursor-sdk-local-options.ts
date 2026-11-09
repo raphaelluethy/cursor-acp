@@ -1,6 +1,6 @@
 import type { LocalAgentOptions, SettingSource } from "@cursor/sdk";
 
-export const LOCAL_SETTING_SOURCES: readonly SettingSource[] = ["user"];
+export const LOCAL_SETTING_SOURCES: readonly SettingSource[] = ["user", "project"];
 
 export function buildLocalAgentOptions(cwd: string, autoReview: boolean): LocalAgentOptions {
 	return {

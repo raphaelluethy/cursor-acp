@@ -88,6 +88,7 @@ import {
 	parseLeadingSlashCommand,
 	promptToCursorImages,
 	promptToCursorText,
+	splitSystemInstructionsPrefix,
 } from "./prompt-conversion.js";
 import {
 	CustomSlashCommand,
@@ -681,6 +682,11 @@ export class CursorAcpAgent implements Agent {
 		});
 	}
 
+	/** Compatibility alias for clients that call stable `session/resume`. */
+	async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+		return await this.unstable_resumeSession(params);
+	}
+
 	async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
 		const PAGE_SIZE = 50;
 		const sessions = await listSessions(params.cwd ?? undefined);
@@ -794,6 +800,15 @@ export class CursorAcpAgent implements Agent {
 		}
 	}
 
+	// TODO(review): prompt admission now involves cancel epochs, promise races
+	// and recursive this.prompt calls. Simplify it or document the state machine
+	// (processingPrompts / activeTurn / steerQueue / pendingPrompts) for
+	// maintainers.
+	//
+	// TODO(review): steer attachments are only removed on cancel, session/close
+	// or the 24h startup sweep. Many clients never send session/close, so user
+	// images can stay in tmp for a day or more. Clean them up once the turn that
+	// consumed them completes.
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
 		const session = this.requireSession(params.sessionId);
 		if (!session.processingPrompts && session.cancelled && session.cancelCleanup) {
@@ -806,8 +821,9 @@ export class CursorAcpAgent implements Agent {
 				await session.turnDrain;
 				return await this.prompt(params);
 			}
-			const promptText = promptToCursorText(params);
-			const slash = parseLeadingSlashCommand(promptText);
+			const slash = parseLeadingSlashCommand(
+				splitSystemInstructionsPrefix(promptToCursorText(params)).prompt,
+			);
 			if (!session.activeTurn) {
 				return await Promise.race([
 					session.steerQueue
@@ -965,6 +981,10 @@ export class CursorAcpAgent implements Agent {
 			if (session.pendingPrompts?.length || !session.activeRun) {
 				return { response: this.queuePrompt(session, params, steerText.text) };
 			}
+			// TODO(review): both error branches below wipe the whole session
+			// attachment directory, including files still referenced by other
+			// deferred prompts in pendingPrompts. Remove only the files of this
+			// steer.
 			if (!canSteer) {
 				await cleanupSessionSteerAttachments(session.sessionId);
 				throw RequestError.internalError(
@@ -1032,7 +1052,8 @@ export class CursorAcpAgent implements Agent {
 		// injected with, so the agent sees identical content either way.
 		let promptText = steerText ?? promptToCursorText(params);
 		const promptImages = steerText ? undefined : promptToCursorImages(params);
-		const slash = parseLeadingSlashCommand(promptText);
+		const { prefix, prompt } = splitSystemInstructionsPrefix(promptText);
+		const slash = parseLeadingSlashCommand(prompt);
 		if (slash.hasSlash && !this.hasNativeSlashCommand(session, slash.command)) {
 			const handled = await handleSlashCommand(slash.command, slash.args, {
 				session,
@@ -1075,9 +1096,10 @@ export class CursorAcpAgent implements Agent {
 					slash.command,
 					slash.args,
 					session.customSlashCommands,
-				) ?? resolveSkillSlashCommandPrompt(slash.command, session.customSkills);
+				) ??
+				resolveSkillSlashCommandPrompt(slash.command, slash.args, session.customSkills);
 			if (customPrompt) {
-				promptText = customPrompt;
+				promptText = prefix + customPrompt;
 			}
 		}
 		session.deliveredSteers = [];
@@ -1456,13 +1478,13 @@ export class CursorAcpAgent implements Agent {
 			customSkills: [],
 			notificationsReady: false,
 			pendingNotifications: [],
+			backendSessionId: params.preferredBackendSessionId,
 			pendingNativeSessionId: params.preferredBackendSessionId,
 		};
 
-		this.sessions[session.sessionId] = session;
-
 		await this.loadSessionSlashExtensions(session);
 		const fallbackModels = await this.getAvailableModels(session);
+		this.sessions[session.sessionId] = session;
 		session.fallbackSessionModels = fallbackModels;
 		await this.emitOrQueueNotification(session, {
 			sessionId: session.sessionId,
@@ -1493,7 +1515,7 @@ export class CursorAcpAgent implements Agent {
 	private async loadSessionSlashExtensions(session: SessionState): Promise<void> {
 		const [customSlashCommands, customSkills] = await Promise.allSettled([
 			loadCustomSlashCommands(session.cwd),
-			loadCustomSkills(session.cwd),
+			loadCustomSkills(session.cwd, undefined, this.logger),
 		]);
 
 		if (customSlashCommands.status === "fulfilled") {
@@ -1911,12 +1933,7 @@ export class CursorAcpAgent implements Agent {
 	}
 
 	private async getAvailableModels(session: SessionState) {
-		let listed: CursorModelDescriptor[] = [];
-		try {
-			listed = await this.runner.listModels();
-		} catch (error) {
-			this.logger.error("[cursor-acp] Unable to list models", error);
-		}
+		let listed = await this.runner.listModels();
 
 		listed = withCliModelParameters(mergeModelCatalogs(listed, session.modelCatalog));
 		session.modelCatalog = listed;
