@@ -5,6 +5,7 @@ import {
 	promptToCursorImages,
 	promptToCursorText,
 	rewriteMcpSlashCommand,
+	splitSystemInstructionsPrefix,
 } from "../prompt-conversion.js";
 
 describe("prompt conversion", () => {
@@ -48,6 +49,21 @@ describe("prompt conversion", () => {
 			command: "commit",
 			args: "feat(parser)",
 			raw: "/commit\nfeat(parser)",
+		});
+	});
+
+	it("separates BB system instructions from a leading user slash command", () => {
+		expect(
+			splitSystemInstructionsPrefix(
+				"<system_instructions>BB context</system_instructions>\n\n/skill do work",
+			),
+		).toEqual({
+			prefix: "<system_instructions>BB context</system_instructions>\n\n",
+			prompt: "/skill do work",
+		});
+		expect(splitSystemInstructionsPrefix("/skill do work")).toEqual({
+			prefix: "",
+			prompt: "/skill do work",
 		});
 	});
 
